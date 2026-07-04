@@ -1,15 +1,23 @@
 import { useState } from "react";
-import { MapPin, Calendar, Clock, Users, ArrowRight, CheckCircle2 } from "lucide-react";
+import { MapPin, Calendar, Clock, Users, ArrowRight, CheckCircle2, FileText, AlertCircle } from "lucide-react";
+import { createRide } from "../../lib/ridesDb";
+import type { UserLocation } from "../../lib/locationService";
 
 interface PostRideScreenProps {
   onPosted: () => void;
+  userId: string;
+  userName: string;
+  userLocation?: UserLocation | null;
 }
 
-export function PostRideScreen({ onPosted }: PostRideScreenProps) {
+export function PostRideScreen({ onPosted, userId, userName, userLocation }: PostRideScreenProps) {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [postedRideId, setPostedRideId] = useState<string | null>(null);
+
   const [form, setForm] = useState({
-    from: "",
+    from: userLocation?.areaName ?? "",
     to: "",
     date: "",
     time: "",
@@ -17,14 +25,34 @@ export function PostRideScreen({ onPosted }: PostRideScreenProps) {
     notes: "",
   });
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     setLoading(true);
-    setTimeout(() => {
-      setLoading(false);
+    setError(null);
+    try {
+      const ride = await createRide({
+        userId,
+        posterName: userName,
+        from: form.from,
+        to: form.to,
+        fromCoords: userLocation
+          ? { lat: userLocation.lat, lng: userLocation.lng }
+          : undefined,
+        date: form.date,
+        time: form.time,
+        seats: Number(form.seats),
+        notes: form.notes || undefined,
+      });
+      setPostedRideId(ride.rideId);
       setStep(3);
-    }, 1500);
+    } catch (err) {
+      console.error("Failed to post ride:", err);
+      setError("Failed to save your ride. Please check your connection and try again.");
+    } finally {
+      setLoading(false);
+    }
   };
 
+  // ── Step 3: Success screen ──────────────────────────────────────────
   if (step === 3) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[70vh] px-8 text-center gap-6">
@@ -35,14 +63,28 @@ export function PostRideScreen({ onPosted }: PostRideScreenProps) {
           <CheckCircle2 className="w-12 h-12 text-white" />
         </div>
         <div>
-          <h2 style={{ fontWeight: 700, fontSize: "1.5rem", color: "var(--foreground)" }}>Ride Posted! 🎉</h2>
+          <h2 style={{ fontWeight: 700, fontSize: "1.5rem", color: "var(--foreground)" }}>
+            Ride Posted! 🎉
+          </h2>
           <p className="text-muted-foreground mt-2" style={{ fontSize: "0.9rem", lineHeight: 1.6 }}>
-            Your ride from <strong style={{ color: "var(--foreground)" }}>{form.from || "Koramangala"}</strong> to{" "}
-            <strong style={{ color: "var(--foreground)" }}>{form.to || "Whitefield"}</strong> is live. We'll notify you when someone requests to join!
+            Your ride from{" "}
+            <strong style={{ color: "var(--foreground)" }}>{form.from}</strong> to{" "}
+            <strong style={{ color: "var(--foreground)" }}>{form.to}</strong> is live.
+            We'll notify you when someone requests to join!
           </p>
+          {postedRideId && (
+            <p className="mt-2 text-xs" style={{ color: "var(--muted-foreground)" }}>
+              Ride ID: {postedRideId.slice(0, 8)}…
+            </p>
+          )}
         </div>
         <button
-          onClick={() => { setStep(1); setForm({ from: "", to: "", date: "", time: "", seats: "1", notes: "" }); onPosted(); }}
+          onClick={() => {
+            setStep(1);
+            setForm({ from: userLocation?.areaName ?? "", to: "", date: "", time: "", seats: "1", notes: "" });
+            setPostedRideId(null);
+            onPosted();
+          }}
           className="px-8 py-3 rounded-xl transition-all hover:opacity-90"
           style={{ background: "var(--primary)", color: "var(--primary-foreground)", fontWeight: 600 }}
         >
@@ -56,8 +98,12 @@ export function PostRideScreen({ onPosted }: PostRideScreenProps) {
     <div className="px-4 pb-8">
       {/* Header */}
       <div className="mb-6">
-        <h2 style={{ fontWeight: 700, fontSize: "1.4rem", color: "var(--foreground)" }}>Post a Ride 🚲</h2>
-        <p className="text-muted-foreground mt-1" style={{ fontSize: "0.875rem" }}>Fill in the details to find your dost</p>
+        <h2 style={{ fontWeight: 700, fontSize: "1.4rem", color: "var(--foreground)" }}>
+          Post a Ride 🚲
+        </h2>
+        <p className="text-muted-foreground mt-1" style={{ fontSize: "0.875rem" }}>
+          Fill in the details to find your dost
+        </p>
       </div>
 
       {/* Progress */}
@@ -75,21 +121,45 @@ export function PostRideScreen({ onPosted }: PostRideScreenProps) {
             >
               {s}
             </div>
-            <span style={{ fontSize: "0.8rem", color: step >= s ? "var(--primary)" : "var(--muted-foreground)", fontWeight: step >= s ? 600 : 400 }}>
+            <span
+              style={{
+                fontSize: "0.8rem",
+                color: step >= s ? "var(--primary)" : "var(--muted-foreground)",
+                fontWeight: step >= s ? 600 : 400,
+              }}
+            >
               {s === 1 ? "Route" : "Schedule"}
             </span>
-            {s < 2 && <div className="flex-1 h-0.5 rounded-full" style={{ background: step > s ? "var(--primary)" : "var(--border)" }} />}
+            {s < 2 && (
+              <div
+                className="flex-1 h-0.5 rounded-full"
+                style={{ background: step > s ? "var(--primary)" : "var(--border)" }}
+              />
+            )}
           </div>
         ))}
       </div>
 
+      {/* Error banner */}
+      {error && (
+        <div className="mb-4 flex items-start gap-2.5 px-4 py-3 rounded-xl border text-xs font-medium"
+          style={{ background: "rgba(239,68,68,0.08)", borderColor: "rgba(239,68,68,0.2)", color: "var(--destructive)" }}>
+          <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          {error}
+        </div>
+      )}
+
+      {/* ── Step 1: Route ─────────────────────────────────────────── */}
       {step === 1 && (
         <div className="space-y-4">
-          <SectionCard title="Start Location" icon={<MapPin className="w-5 h-5" style={{ color: "var(--primary)" }} />}>
+          <SectionCard
+            title="Start Location"
+            icon={<MapPin className="w-5 h-5" style={{ color: "var(--primary)" }} />}
+          >
             <input
               className="w-full bg-transparent outline-none text-foreground placeholder:text-muted-foreground"
               style={{ fontSize: "0.9rem" }}
-              placeholder="e.g. Koramangala 5th Block"
+              placeholder={userLocation ? `e.g. ${userLocation.areaName}` : "e.g. Koramangala 5th Block"}
               value={form.from}
               onChange={(e) => setForm({ ...form, from: e.target.value })}
             />
@@ -103,7 +173,10 @@ export function PostRideScreen({ onPosted }: PostRideScreenProps) {
             <ArrowRight className="w-4 h-4 rotate-90" />
           </div>
 
-          <SectionCard title="Destination" icon={<MapPin className="w-5 h-5" style={{ color: "var(--accent)" }} />}>
+          <SectionCard
+            title="Destination"
+            icon={<MapPin className="w-5 h-5" style={{ color: "var(--accent)" }} />}
+          >
             <input
               className="w-full bg-transparent outline-none text-foreground placeholder:text-muted-foreground"
               style={{ fontSize: "0.9rem" }}
@@ -115,15 +188,17 @@ export function PostRideScreen({ onPosted }: PostRideScreenProps) {
 
           {/* Popular routes */}
           <div>
-            <p className="text-muted-foreground mb-3" style={{ fontSize: "0.8rem" }}>Popular routes</p>
+            <p className="text-muted-foreground mb-3" style={{ fontSize: "0.8rem" }}>
+              Popular routes
+            </p>
             <div className="flex flex-wrap gap-2">
               {[
-                { from: "Koramangala", to: "Whitefield" },
+                { from: userLocation?.areaName ?? "Koramangala", to: "Whitefield" },
                 { from: "HSR Layout", to: "Electronic City" },
                 { from: "Indiranagar", to: "MG Road" },
               ].map((r) => (
                 <button
-                  key={r.from}
+                  key={`${r.from}-${r.to}`}
                   onClick={() => setForm({ ...form, from: r.from, to: r.to })}
                   className="flex items-center gap-2 px-3 py-2 rounded-xl border text-sm transition-all hover:border-primary"
                   style={{ borderColor: "var(--border)", color: "var(--foreground)", fontSize: "0.8rem" }}
@@ -146,9 +221,13 @@ export function PostRideScreen({ onPosted }: PostRideScreenProps) {
         </div>
       )}
 
+      {/* ── Step 2: Schedule ──────────────────────────────────────── */}
       {step === 2 && (
         <div className="space-y-4">
-          <SectionCard title="Date" icon={<Calendar className="w-5 h-5" style={{ color: "var(--primary)" }} />}>
+          <SectionCard
+            title="Date"
+            icon={<Calendar className="w-5 h-5" style={{ color: "var(--primary)" }} />}
+          >
             <input
               type="date"
               className="w-full bg-transparent outline-none text-foreground"
@@ -159,7 +238,10 @@ export function PostRideScreen({ onPosted }: PostRideScreenProps) {
             />
           </SectionCard>
 
-          <SectionCard title="Departure Time" icon={<Clock className="w-5 h-5" style={{ color: "var(--primary)" }} />}>
+          <SectionCard
+            title="Departure Time"
+            icon={<Clock className="w-5 h-5" style={{ color: "var(--primary)" }} />}
+          >
             <input
               type="time"
               className="w-full bg-transparent outline-none text-foreground"
@@ -169,7 +251,10 @@ export function PostRideScreen({ onPosted }: PostRideScreenProps) {
             />
           </SectionCard>
 
-          <SectionCard title="Available Seats" icon={<Users className="w-5 h-5" style={{ color: "var(--primary)" }} />}>
+          <SectionCard
+            title="Available Seats"
+            icon={<Users className="w-5 h-5" style={{ color: "var(--primary)" }} />}
+          >
             <div className="flex items-center gap-4">
               {["1", "2", "3"].map((n) => (
                 <button
@@ -189,7 +274,10 @@ export function PostRideScreen({ onPosted }: PostRideScreenProps) {
             </div>
           </SectionCard>
 
-          <SectionCard title="Notes (optional)" icon={<MapPin className="w-5 h-5" style={{ color: "var(--muted-foreground)" }} />}>
+          <SectionCard
+            title="Notes (optional)"
+            icon={<FileText className="w-5 h-5" style={{ color: "var(--muted-foreground)" }} />}
+          >
             <textarea
               className="w-full bg-transparent outline-none text-foreground placeholder:text-muted-foreground resize-none"
               style={{ fontSize: "0.9rem", minHeight: "70px" }}
@@ -200,24 +288,29 @@ export function PostRideScreen({ onPosted }: PostRideScreenProps) {
           </SectionCard>
 
           {/* Summary */}
-          <div
-            className="rounded-2xl p-4 space-y-2"
-            style={{ background: "var(--secondary)" }}
-          >
-            <p style={{ fontWeight: 600, fontSize: "0.9rem", color: "var(--foreground)" }}>Ride Summary</p>
+          <div className="rounded-2xl p-4 space-y-2" style={{ background: "var(--secondary)" }}>
+            <p style={{ fontWeight: 600, fontSize: "0.9rem", color: "var(--foreground)" }}>
+              Ride Summary
+            </p>
             <div className="flex items-center gap-2">
               <MapPin className="w-3.5 h-3.5" style={{ color: "var(--primary)" }} />
-              <span style={{ fontSize: "0.85rem", color: "var(--foreground)" }}>{form.from} → {form.to}</span>
+              <span style={{ fontSize: "0.85rem", color: "var(--foreground)" }}>
+                {form.from} → {form.to}
+              </span>
             </div>
             {form.date && (
               <div className="flex items-center gap-2">
                 <Calendar className="w-3.5 h-3.5" style={{ color: "var(--primary)" }} />
-                <span style={{ fontSize: "0.85rem", color: "var(--foreground)" }}>{form.date} at {form.time || "TBD"}</span>
+                <span style={{ fontSize: "0.85rem", color: "var(--foreground)" }}>
+                  {form.date} at {form.time || "TBD"}
+                </span>
               </div>
             )}
             <div className="flex items-center gap-2">
               <Users className="w-3.5 h-3.5" style={{ color: "var(--primary)" }} />
-              <span style={{ fontSize: "0.85rem", color: "var(--foreground)" }}>{form.seats} seat{Number(form.seats) > 1 ? "s" : ""} available</span>
+              <span style={{ fontSize: "0.85rem", color: "var(--foreground)" }}>
+                {form.seats} seat{Number(form.seats) > 1 ? "s" : ""} available
+              </span>
             </div>
           </div>
 
@@ -232,7 +325,7 @@ export function PostRideScreen({ onPosted }: PostRideScreenProps) {
             <button
               onClick={handleSubmit}
               disabled={loading || !form.date}
-              className="flex-2 flex-1 py-3.5 rounded-xl flex items-center justify-center gap-2 transition-all hover:opacity-90 disabled:opacity-50"
+              className="flex-1 py-3.5 rounded-xl flex items-center justify-center gap-2 transition-all hover:opacity-90 disabled:opacity-50"
               style={{ background: "var(--primary)", color: "white", fontWeight: 600 }}
             >
               {loading ? (
@@ -248,12 +341,22 @@ export function PostRideScreen({ onPosted }: PostRideScreenProps) {
   );
 }
 
-function SectionCard({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
+function SectionCard({
+  title,
+  icon,
+  children,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
     <div>
       <div className="flex items-center gap-2 mb-2">
         {icon}
-        <label style={{ fontWeight: 600, fontSize: "0.875rem", color: "var(--foreground)" }}>{title}</label>
+        <label style={{ fontWeight: 600, fontSize: "0.875rem", color: "var(--foreground)" }}>
+          {title}
+        </label>
       </div>
       <div
         className="rounded-xl px-4 py-3.5 border focus-within:border-primary transition-all"

@@ -1,4 +1,5 @@
 import { MapPin, Clock, Users, Zap, TrendingUp, Star, ChevronRight } from "lucide-react";
+import { TandemBike } from "./ui/TandemBike";
 
 interface Ride {
   id: string;
@@ -48,12 +49,15 @@ const sampleRides: Ride[] = [
   },
 ];
 
+import { UserLocation } from "../../lib/locationService";
+
 interface HomeScreenProps {
   user: { name: string; email: string };
   onRequestRide: (ride: Ride) => void;
+  userLocation?: UserLocation | null;
 }
 
-export function HomeScreen({ user, onRequestRide }: HomeScreenProps) {
+export function HomeScreen({ user, onRequestRide, userLocation }: HomeScreenProps) {
   const firstName = user.name.split(" ")[0];
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
@@ -69,15 +73,60 @@ export function HomeScreen({ user, onRequestRide }: HomeScreenProps) {
       >
         <div className="absolute top-0 right-0 w-40 h-40 rounded-full opacity-10 bg-white -translate-y-1/2 translate-x-1/2" />
         <div className="absolute bottom-0 left-1/3 w-24 h-24 rounded-full opacity-10 bg-white translate-y-1/2" />
+        
         <div className="relative z-10">
           <p className="text-white/80" style={{ fontSize: "0.85rem" }}>{greeting},</p>
-          <h2 className="text-white mt-0.5" style={{ fontWeight: 700, fontSize: "1.4rem" }}>{firstName}! 🚲</h2>
-          <p className="text-white/75 mt-1" style={{ fontSize: "0.85rem" }}>Where are you riding today?</p>
+          <div className="flex items-center gap-2 mt-0.5">
+            <h2 className="text-white" style={{ fontWeight: 700, fontSize: "1.4rem" }}>{firstName}!</h2>
+            <div className="w-7 h-7 rounded-lg bg-white/20 backdrop-blur-sm flex items-center justify-center border border-white/25 shadow-sm">
+              <TandemBike className="w-5.5 h-5.5" />
+            </div>
+          </div>
+          {userLocation ? (
+            <p className="text-white/90 mt-1 flex items-center gap-1" style={{ fontSize: "0.82rem" }}>
+              <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 flex-shrink-0" fill="currentColor">
+                <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
+              </svg>
+              {userLocation.fullLabel}
+            </p>
+          ) : (
+            <p className="text-white/75 mt-1" style={{ fontSize: "0.85rem" }}>Where are you riding today?</p>
+          )}
 
-          {/* Quick search */}
-          <div className="mt-4 flex items-center gap-3 bg-white/20 backdrop-blur-sm rounded-xl px-4 py-3">
-            <MapPin className="w-4 h-4 text-white/80 flex-shrink-0" />
-            <span className="text-white/70" style={{ fontSize: "0.9rem" }}>Search destination...</span>
+          {/* Quick search with animations inside */}
+          <div className="relative mt-4 flex items-center justify-between bg-white/20 backdrop-blur-sm rounded-xl px-4 py-3 overflow-hidden">
+            <div className="flex items-center gap-3 relative z-10">
+              <MapPin className="w-4 h-4 text-white/85 flex-shrink-0 animate-pulse" />
+              <span className="text-white/80 font-medium" style={{ fontSize: "0.9rem" }}>Search destination...</span>
+            </div>
+
+            {/* Cruise track inside the search bar */}
+            <div className="absolute inset-0 pointer-events-none opacity-25 overflow-hidden">
+              <div className="absolute bottom-[3px] left-0 right-0 h-px border-t border-dashed border-white/30" />
+              
+              {/* Sports Car (Slow Cruiser) */}
+              <div className="animate-cruise-slow absolute bottom-[2px]">
+                <svg viewBox="0 0 100 35" className="w-8 h-auto text-white fill-current">
+                  <circle cx="25" cy="27" r="6" className="text-white/60 fill-current" />
+                  <circle cx="75" cy="27" r="6" className="text-white/60 fill-current" />
+                  <path d="M 5 27 L 15 27 C 15 23, 20 20, 25 20 C 30 20, 35 23, 35 27 L 65 27 C 65 23, 70 20, 75 20 C 80 20, 85 23, 85 27 L 95 27 C 97 27, 98 25, 96 23 C 92 18, 85 14, 78 14 C 74 14, 62 10, 52 10 C 42 10, 32 14, 25 16 C 18 18, 10 20, 6 23 C 4 24, 4 27, 5 27 Z" />
+                </svg>
+              </div>
+              
+              {/* Sports Motorcycle (Fast Cruiser) */}
+              <div className="animate-cruise-fast absolute bottom-[2px]">
+                <svg viewBox="0 0 80 50" className="w-6.5 h-auto text-white fill-current">
+                  <circle cx="20" cy="38" r="10" stroke="currentColor" strokeWidth="2.5" fill="none" className="text-white/85" />
+                  <circle cx="60" cy="38" r="10" stroke="currentColor" strokeWidth="2.5" fill="none" className="text-white/85" />
+                  <circle cx="20" cy="38" r="3" fill="currentColor" />
+                  <circle cx="60" cy="38" r="3" fill="currentColor" />
+                  <path d="M 20 38 L 32 25 L 42 38 L 60 38 M 32 25 L 50 15 L 56 22 L 60 38 M 50 15 L 45 12 L 35 18 L 22 24 Z" stroke="currentColor" strokeWidth="2" fill="none" />
+                  <path d="M 22 24 L 38 12 C 45 10, 52 10, 58 14 L 62 20 L 64 28 L 56 35 L 40 38 Z" fill="currentColor" opacity="0.85" />
+                  <circle cx="48" cy="10" r="4.5" fill="currentColor" />
+                  <path d="M 36 22 C 38 16, 43 14, 48 14 C 52 14, 55 18, 57 24 L 46 22 Z" fill="currentColor" />
+                </svg>
+              </div>
+            </div>
           </div>
         </div>
       </div>

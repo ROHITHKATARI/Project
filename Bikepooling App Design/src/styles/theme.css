@@ -3,9 +3,9 @@
 :root {
   --font-size: 16px;
   /* Ocean Breeze — Frosted Glass */
-  --background: linear-gradient(145deg, #eff6ff 0%, #dbeafe 30%, #e0f2fe 60%, #f0f9ff 100%);
-  --background-solid: #f0f9ff;
-  --foreground: #0c1e3a;
+  --background: linear-gradient(135deg, #f5f3ff 0%, #e0e7ff 30%, #e0f2fe 70%, #eff6ff 100%);
+  --background-solid: #faf9ff;
+  --foreground: #09132c;
   --card: rgba(255, 255, 255, 0.55);
   --card-foreground: #0c1e3a;
   --popover: rgba(255, 255, 255, 0.65);
@@ -217,4 +217,38 @@
   *:hover {
     scrollbar-color: rgba(59, 130, 246, 0.3) transparent;
   }
+
+  @keyframes ride {
+    0% { offset-distance: 0%; }
+    100% { offset-distance: 100%; }
+  }
+
+  .rider {
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #FFB020;
+    box-shadow: 0 0 14px 4px rgba(255,176,32,0.55);
+    offset-path: path('M -40 420 C 140 320, 220 520, 420 380 S 700 180, 980 300');
+    animation: ride 9s linear infinite;
+  }
+
+  @keyframes cruise-vehicle {
+    0% { left: -30%; }
+    100% { left: 115%; }
+  }
+
+  .animate-cruise-slow {
+    position: absolute;
+    animation: cruise-vehicle 18s linear infinite;
+  }
+
+  .animate-cruise-fast {
+    position: absolute;
+    animation: cruise-vehicle 11s linear infinite;
+    animation-delay: -5.5s;
+  }
 }
+
+
