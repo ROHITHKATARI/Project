@@ -1,4 +1,4 @@
-﻿import {
+import {
   signIn,
   signUp,
   signOut,
@@ -8,6 +8,8 @@
   fetchAuthSession,
   fetchUserAttributes,
   signInWithRedirect,
+  resetPassword,
+  confirmResetPassword,
 } from "aws-amplify/auth";
 
 // ─── Types ────────────────────────────────────────────────────────────
@@ -40,6 +42,8 @@ function friendlyError(err: unknown): string {
       return "Too many attempts. Please wait a few minutes and try again.";
     case "NetworkError":
       return "Network error. Please check your internet connection.";
+    case "InvalidParameterException":
+      return "Invalid input. Please check your details and try again.";
     default:
       return err.message || "Something went wrong. Please try again.";
   }
@@ -119,16 +123,89 @@ export async function logoutUser(): Promise<void> {
   }
 }
 
+/** Send a password-reset OTP to the user's email */
+export async function sendPasswordResetOTP(email: string): Promise<void> {
+  try {
+    await resetPassword({ username: email });
+  } catch (err) {
+    throw new Error(friendlyError(err));
+  }
+}
+
+/** Confirm password reset with OTP + new password */
+export async function confirmPasswordReset(
+  email: string,
+  code: string,
+  newPassword: string
+): Promise<void> {
+  try {
+    await confirmResetPassword({
+      username: email,
+      confirmationCode: code,
+      newPassword,
+    });
+  } catch (err) {
+    throw new Error(friendlyError(err));
+  }
+}
+
+/** Extract user info from ID token (all users) or attributes API (fallback) */
+async function resolveUserInfo(
+  user: { userId: string; username: string }
+): Promise<AuthUser> {
+  // Strategy 1: decode the ID token — works for ALL users (email + Google)
+  // without making an API call, so no 400 errors for federated users.
+  try {
+    const session = await fetchAuthSession();
+    const payload = session.tokens?.idToken?.payload;
+    if (payload) {
+      const email = (payload.email as string) ?? user.username;
+      const name =
+        (payload.name as string) ||
+        [(payload.given_name as string), (payload.family_name as string)]
+          .filter(Boolean)
+          .join(" ") ||
+        email.split("@")[0];
+      return {
+        userId: user.userId,
+        email,
+        name: name || "User",
+      };
+    }
+  } catch {
+    // ID token unavailable — try fetchUserAttributes next
+  }
+
+  // Strategy 2: fetchUserAttributes API (fallback for edge cases)
+  try {
+    const attrs = await fetchUserAttributes();
+    const name =
+      attrs.name ||
+      [attrs.given_name, attrs.family_name].filter(Boolean).join(" ") ||
+      attrs.email?.split("@")[0] ||
+      user.username;
+    return {
+      userId: user.userId,
+      email: attrs.email ?? user.username,
+      name: name || "User",
+    };
+  } catch {
+    // Also unavailable — use bare minimum
+  }
+
+  // Strategy 3: bare minimum fallback
+  return {
+    userId: user.userId,
+    email: user.username,
+    name: user.username.split("@")[0] || "User",
+  };
+}
+
 /** Get the current authenticated user (returns null if not signed in) */
 export async function getCurrentAuthUser(): Promise<AuthUser | null> {
   try {
     const user = await getCurrentUser();
-    const attrs = await fetchUserAttributes();
-    return {
-      userId: user.userId,
-      email: attrs.email ?? user.username,
-      name: attrs.name ?? attrs.email ?? user.username,
-    };
+    return await resolveUserInfo(user);
   } catch {
     return null;
   }
@@ -137,19 +214,22 @@ export async function getCurrentAuthUser(): Promise<AuthUser | null> {
 /** Get current user (internal use - throws if not signed in) */
 async function getAuthUser(): Promise<AuthUser> {
   const user = await getCurrentUser();
-  const attrs = await fetchUserAttributes();
-  return {
-    userId: user.userId,
-    email: attrs.email ?? user.username,
-    name: attrs.name ?? attrs.email ?? user.username,
-  };
+  return await resolveUserInfo(user);
 }
 
-/** Get IAM credentials from the Identity Pool (used by DynamoDB client) */
-export async function getAWSCredentials() {
-  const session = await fetchAuthSession();
+/** Get IAM credentials from the Identity Pool (used by DynamoDB client).
+ *  Pass forceRefresh=true right after a Google OAuth redirect to ensure
+ *  the Identity Pool has federated the fresh Cognito session.
+ */
+export async function getAWSCredentials(forceRefresh = false) {
+  const session = await fetchAuthSession({ forceRefresh });
   if (!session.credentials) {
-    throw new Error("No AWS credentials available. Please sign in first.");
+    // One retry with forceRefresh in case the first attempt was stale
+    const retried = await fetchAuthSession({ forceRefresh: true });
+    if (!retried.credentials) {
+      throw new Error("No AWS credentials available. Please sign in first.");
+    }
+    return retried.credentials;
   }
   return session.credentials;
 }

@@ -1,4 +1,4 @@
-﻿import { Amplify } from "aws-amplify";
+import { Amplify } from "aws-amplify";
 
 // ─── AWS Configuration ────────────────────────────────────────────────
 // Region: ap-south-1 (Mumbai)
@@ -10,6 +10,8 @@ export const AWS_CONFIG = {
   identityPoolId: "ap-south-1:f5f51eab-1741-45b0-a10a-b86979fbd09b",
   cognitoDomain: "ap-south-1ruc1b0qgv.auth.ap-south-1.amazoncognito.com",
   dynamoDBTable: "dostwheels-users",
+  s3Bucket: "dostwheels-avatars",   // profile picture storage
+  s3Region: "ap-south-1",           // bucket region
   redirectSignIn: "http://localhost:5173/",
   redirectSignOut: "http://localhost:5173/",
 } as const;

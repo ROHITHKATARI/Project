@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Eye, EyeOff, ArrowRight, Mail, CheckCircle2 } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Eye, EyeOff, ArrowRight, Mail, CheckCircle2, KeyRound, ArrowLeft } from "lucide-react";
 import { TandemBike } from "./ui/TandemBike";
 import {
   registerWithEmail,
@@ -7,6 +7,8 @@ import {
   confirmEmail,
   resendCode,
   signInWithGoogle,
+  sendPasswordResetOTP,
+  confirmPasswordReset,
 } from "../../lib/auth";
 import { upsertUserProfile } from "../../lib/userDb";
 
@@ -14,9 +16,11 @@ interface AuthScreenProps {
   onAuth: (user: { id: string; name: string; email: string; avatar?: string }) => void;
   isDark: boolean;
   toggleTheme: () => void;
+  oauthError?: string | null;
+  onClearOauthError?: () => void;
 }
 
-type Tab = "login" | "register" | "confirm";
+type Tab = "login" | "register" | "confirm" | "forgot" | "reset";
 
 interface FloatingInputProps {
   id: string;
@@ -56,18 +60,27 @@ function FloatingInput({
   );
 }
 
-export function AuthScreen({ onAuth, isDark, toggleTheme }: AuthScreenProps) {
+export function AuthScreen({ onAuth, isDark, toggleTheme, oauthError, onClearOauthError }: AuthScreenProps) {
   const [tab, setTab] = useState<Tab>("login");
   const [showPassword, setShowPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
   const [form, setForm] = useState({ name: "", emailOrPhone: "", password: "" });
   const [confirmCode, setConfirmCode] = useState("");
   const [pendingEmail, setPendingEmail] = useState("");
   const [pendingName, setPendingName] = useState("");
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [resetCode, setResetCode] = useState("");
+  const [newPassword, setNewPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resendCooldown, setResendCooldown] = useState(false);
 
-  const clearError = () => setError(null);
+  // Show Google OAuth errors as a local error banner
+  useEffect(() => {
+    if (oauthError) setError(oauthError);
+  }, [oauthError]);
+
+  const clearError = () => { setError(null); onClearOauthError?.(); };
 
   // ─── Register ──────────────────────────────────────────────────────
   const handleRegister = async (e: React.FormEvent) => {
@@ -146,6 +159,42 @@ export function AuthScreen({ onAuth, isDark, toggleTheme }: AuthScreenProps) {
     setTimeout(() => setResendCooldown(false), 30000);
   };
 
+  // ─── Forgot password — send OTP ────────────────────────────────────
+  const handleForgotSend = async (e: React.FormEvent) => {
+    e.preventDefault();
+    clearError();
+    if (!forgotEmail.trim()) { setError("Please enter your email address."); return; }
+    setLoading(true);
+    try {
+      await sendPasswordResetOTP(forgotEmail.trim());
+      setTab("reset");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to send reset code.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ─── Forgot password — confirm OTP + new password ──────────────────
+  const handleResetConfirm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    clearError();
+    if (resetCode.trim().length !== 6) { setError("Please enter the 6-digit code sent to your email."); return; }
+    if (newPassword.length < 8) { setError("Password must be at least 8 characters."); return; }
+    setLoading(true);
+    try {
+      await confirmPasswordReset(forgotEmail.trim(), resetCode.trim(), newPassword);
+      // Auto sign-in with new password and go to home
+      const authUser = await loginWithEmail(forgotEmail.trim(), newPassword);
+      const profile = await upsertUserProfile(authUser.userId, authUser.name, authUser.email, "email");
+      onAuth({ id: profile.userId, name: profile.name, email: profile.email, avatar: profile.avatar });
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Reset failed. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // ─── Google sign-in ────────────────────────────────────────────────
   const handleGoogle = async () => {
     clearError();
@@ -153,7 +202,20 @@ export function AuthScreen({ onAuth, isDark, toggleTheme }: AuthScreenProps) {
     try {
       await signInWithGoogle(); // Redirects to Cognito Hosted UI
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Google sign-in failed.");
+      const msg = err instanceof Error ? err.message : "";
+      // If there's already a signed-in user (stale session), sign out first and retry
+      if (msg.toLowerCase().includes("already") || msg.toLowerCase().includes("signed in")) {
+        try {
+          const { signOut } = await import("aws-amplify/auth");
+          await signOut();
+          await signInWithGoogle(); // retry after clearing stale session
+          return;
+        } catch (retryErr: unknown) {
+          setError(retryErr instanceof Error ? retryErr.message : "Google sign-in failed.");
+        }
+      } else {
+        setError(msg || "Google sign-in failed.");
+      }
       setLoading(false);
     }
   };
@@ -257,15 +319,22 @@ export function AuthScreen({ onAuth, isDark, toggleTheme }: AuthScreenProps) {
             {/* Header */}
             <div className="mb-6 flex justify-between items-start">
               <div>
-                <h2 className="font-['Space_Grotesk'] text-2xl font-bold text-foreground tracking-tight">
+                <h2
+                  className="font-['Space_Grotesk'] font-bold text-foreground tracking-tight"
+                  style={{ fontSize: "clamp(1.25rem, 5vw, 1.6rem)" }}
+                >
                   {tab === "login" && "Welcome back 👋"}
                   {tab === "register" && "Join the crew 🚲"}
                   {tab === "confirm" && "Check your email 📧"}
+                  {tab === "forgot" && "Forgot password? 🔑"}
+                  {tab === "reset" && "Set new password 🔒"}
                 </h2>
-                <p className="text-muted-foreground text-xs md:text-sm mt-1.5">
+                <p className="text-muted-foreground mt-1.5" style={{ fontSize: "clamp(0.7rem, 3vw, 0.875rem)" }}>
                   {tab === "login" && "Sign in to continue your ride journey"}
                   {tab === "register" && "Create your account and start pooling"}
                   {tab === "confirm" && `We sent a 6-digit code to ${pendingEmail}`}
+                  {tab === "forgot" && "Enter your email to receive a reset code"}
+                  {tab === "reset" && `Enter the code sent to ${forgotEmail}`}
                 </p>
               </div>
               <button
@@ -294,6 +363,105 @@ export function AuthScreen({ onAuth, isDark, toggleTheme }: AuthScreenProps) {
                   <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
                 </svg>
                 {error}
+              </div>
+            )}
+
+            {/* ── FORGOT PASSWORD — SEND OTP ──────────────────── */}
+            {tab === "forgot" && (
+              <div>
+                <div className="flex justify-center mb-6">
+                  <div className="w-16 h-16 rounded-2xl flex items-center justify-center" style={{ background: "rgba(59,130,246,0.1)" }}>
+                    <KeyRound className="w-8 h-8" style={{ color: "var(--primary)" }} />
+                  </div>
+                </div>
+                <form onSubmit={handleForgotSend} className="space-y-4">
+                  <FloatingInput
+                    id="forgot-email"
+                    label="Your email address"
+                    type="email"
+                    value={forgotEmail}
+                    onChange={(v) => { setForgotEmail(v); clearError(); }}
+                  />
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl bg-primary text-primary-foreground font-bold text-sm hover:opacity-90 active:scale-[0.99] transition-all disabled:opacity-60 shadow-lg shadow-primary/20"
+                  >
+                    {loading ? (
+                      <div className="w-5 h-5 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
+                    ) : (
+                      <><Mail className="w-4 h-4" /> Send Reset Code</>
+                    )}
+                  </button>
+                </form>
+                <p className="text-center mt-5 text-xs text-muted-foreground">
+                  <button type="button" onClick={() => { setTab("login"); clearError(); }}
+                    className="text-primary hover:underline font-semibold cursor-pointer flex items-center gap-1 mx-auto">
+                    <ArrowLeft className="w-3 h-3" /> Back to Sign In
+                  </button>
+                </p>
+              </div>
+            )}
+
+            {/* ── FORGOT PASSWORD — RESET OTP + NEW PASSWORD ─── */}
+            {tab === "reset" && (
+              <div>
+                <div className="flex justify-center mb-6">
+                  <div className="w-16 h-16 rounded-2xl flex items-center justify-center" style={{ background: "rgba(34,197,94,0.1)" }}>
+                    <CheckCircle2 className="w-8 h-8" style={{ color: "#16a34a" }} />
+                  </div>
+                </div>
+                <form onSubmit={handleResetConfirm} className="space-y-4">
+                  <div className="relative">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={6}
+                      value={resetCode}
+                      onChange={(e) => { setResetCode(e.target.value.replace(/\D/g, "")); clearError(); }}
+                      placeholder="6-digit OTP"
+                      className="w-full text-center text-2xl font-bold tracking-[0.5em] px-4 py-4 rounded-xl border border-border bg-card text-foreground outline-none transition-all focus:border-primary focus:ring-2 focus:ring-primary/10"
+                    />
+                  </div>
+                  <div className="relative">
+                    <FloatingInput
+                      id="new-password"
+                      label="New password (min. 8 characters)"
+                      type={showNewPassword ? "text" : "password"}
+                      value={newPassword}
+                      onChange={(v) => { setNewPassword(v); clearError(); }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPassword(!showNewPassword)}
+                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors z-10"
+                    >
+                      {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={loading || resetCode.length !== 6 || newPassword.length < 8}
+                    className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl bg-primary text-primary-foreground font-bold text-sm hover:opacity-90 active:scale-[0.99] transition-all disabled:opacity-60 shadow-lg shadow-primary/20"
+                  >
+                    {loading ? (
+                      <div className="w-5 h-5 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
+                    ) : (
+                      <><CheckCircle2 className="w-4 h-4" /> Reset & Sign In</>
+                    )}
+                  </button>
+                </form>
+                <p className="text-center mt-4 text-xs text-muted-foreground">
+                  Didn't get the code?{" "}
+                  <button type="button" onClick={() => handleForgotSend({ preventDefault: () => {} } as React.FormEvent)}
+                    className="text-primary hover:underline font-bold cursor-pointer">Resend</button>
+                </p>
+                <p className="text-center mt-2">
+                  <button type="button" onClick={() => { setTab("forgot"); clearError(); }}
+                    className="text-xs text-primary hover:underline font-semibold flex items-center gap-1 mx-auto cursor-pointer">
+                    <ArrowLeft className="w-3 h-3" /> Change email
+                  </button>
+                </p>
               </div>
             )}
 
@@ -404,6 +572,7 @@ export function AuthScreen({ onAuth, isDark, toggleTheme }: AuthScreenProps) {
                     {tab === "login" && (
                       <button
                         type="button"
+                        onClick={() => { setForgotEmail(form.emailOrPhone); setTab("forgot"); clearError(); }}
                         className="text-primary hover:underline font-semibold cursor-pointer"
                       >
                         Forgot password?

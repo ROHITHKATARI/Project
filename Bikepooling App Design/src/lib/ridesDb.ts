@@ -20,6 +20,16 @@ import { AWS_CONFIG } from "./aws-config";
 const RIDES_TABLE = "dostwheels-rides";
 
 // ─── Types ────────────────────────────────────────────────────────────
+export interface VehicleDetails {
+  vehicleType: "Bike" | "Scooter" | "Car";
+  make?: string;          // brand e.g. "Honda"
+  vehicleModel: string;   // e.g. "Royal Enfield Classic 350"
+  vehicleColor: string;   // e.g. "Black"
+  vehicleNumber?: string; // e.g. "KA 01 AB 1234"
+  rcNumber?: string;      // RC number for verification
+  year?: string;          // manufacturing year
+}
+
 export interface RidePost {
   rideId: string;         // PK (uuid)
   userId: string;         // GSI PK — Cognito sub of poster
@@ -32,9 +42,12 @@ export interface RidePost {
   seats: number;          // total seats offered
   seatsLeft: number;      // decremented when someone joins
   notes?: string;
+  vehicle?: VehicleDetails; // optional vehicle info
   status: "open" | "full" | "cancelled";
-  joinedByIds: string[];  // Cognito sub of every joiner
+  joinedByIds: string[];  // Cognito sub of every approved joiner
   joinedByNames: string[];
+  pendingRequestIds: string[];   // users awaiting approval
+  pendingRequestNames: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -49,6 +62,7 @@ export type CreateRideInput = {
   time: string;
   seats: number;
   notes?: string;
+  vehicle?: VehicleDetails; // optional vehicle details
 };
 
 export type UpdateRideInput = Partial<
@@ -81,6 +95,8 @@ export async function createRide(input: CreateRideInput): Promise<RidePost> {
     seatsLeft: input.seats,
     joinedByIds: [],
     joinedByNames: [],
+    pendingRequestIds: [],
+    pendingRequestNames: [],
     status: "open",
     createdAt: now,
     updatedAt: now,
@@ -266,5 +282,130 @@ export async function joinRide(
       return { success: false, message: "No seats available on this ride." };
     }
     return { success: false, message: "Failed to join. Please try again." };
+  }
+}
+// ─── Send a join request (adds to pending, does NOT decrement seats) ──
+export async function sendJoinRequest(
+  rideId: string,
+  userId: string,
+  userName: string
+): Promise<{ success: boolean; message: string }> {
+  try {
+    const docClient = await getDocClient();
+    // Check if already requested or joined
+    const existing = await getRideById(rideId);
+    if (!existing) return { success: false, message: "Ride not found." };
+    if (existing.joinedByIds?.includes(userId))
+      return { success: false, message: "You have already joined this ride." };
+    if (existing.pendingRequestIds?.includes(userId))
+      return { success: false, message: "You have already sent a request." };
+    if (existing.seatsLeft <= 0)
+      return { success: false, message: "No seats available on this ride." };
+
+    await docClient.send(
+      new UpdateCommand({
+        TableName: RIDES_TABLE,
+        Key: { rideId },
+        UpdateExpression:
+          "SET pendingRequestIds = list_append(if_not_exists(pendingRequestIds, :empty), :uid)," +
+          " pendingRequestNames = list_append(if_not_exists(pendingRequestNames, :empty), :uname)," +
+          " #ua = :ua",
+        ExpressionAttributeNames: { "#ua": "updatedAt" },
+        ExpressionAttributeValues: {
+          ":uid": [userId],
+          ":uname": [userName],
+          ":empty": [],
+          ":ua": new Date().toISOString(),
+        },
+      })
+    );
+    return { success: true, message: "Request sent! Waiting for approval." };
+  } catch (err) {
+    console.error("sendJoinRequest error:", err);
+    return { success: false, message: "Failed to send request. Please try again." };
+  }
+}
+
+// ─── Approve a join request (move from pending → joined, decrement seats) ─
+export async function approveJoinRequest(
+  rideId: string,
+  requesterId: string,
+  requesterName: string
+): Promise<{ success: boolean; message: string }> {
+  try {
+    const docClient = await getDocClient();
+    const ride = await getRideById(rideId);
+    if (!ride) return { success: false, message: "Ride not found." };
+    if (ride.seatsLeft <= 0) return { success: false, message: "No seats left." };
+
+    // Remove from pending, add to joined, decrement seatsLeft
+    const pendingIds = (ride.pendingRequestIds ?? []).filter((id) => id !== requesterId);
+    const pendingNames = (ride.pendingRequestNames ?? []).filter((_, i) =>
+      (ride.pendingRequestIds ?? [])[i] !== requesterId
+    );
+    const joinedIds = [...(ride.joinedByIds ?? []), requesterId];
+    const joinedNames = [...(ride.joinedByNames ?? []), requesterName];
+    const newSeatsLeft = ride.seatsLeft - 1;
+    const newStatus = newSeatsLeft <= 0 ? "full" : ride.status;
+
+    await docClient.send(
+      new UpdateCommand({
+        TableName: RIDES_TABLE,
+        Key: { rideId },
+        UpdateExpression:
+          "SET pendingRequestIds = :pids, pendingRequestNames = :pnames," +
+          " joinedByIds = :jids, joinedByNames = :jnames," +
+          " seatsLeft = :sl, #st = :st, #ua = :ua",
+        ExpressionAttributeNames: { "#st": "status", "#ua": "updatedAt" },
+        ExpressionAttributeValues: {
+          ":pids": pendingIds,
+          ":pnames": pendingNames,
+          ":jids": joinedIds,
+          ":jnames": joinedNames,
+          ":sl": newSeatsLeft,
+          ":st": newStatus,
+          ":ua": new Date().toISOString(),
+        },
+      })
+    );
+    return { success: true, message: `${requesterName} approved!` };
+  } catch (err) {
+    console.error("approveJoinRequest error:", err);
+    return { success: false, message: "Failed to approve. Please try again." };
+  }
+}
+
+// ─── Decline a join request ───────────────────────────────────────────
+export async function declineJoinRequest(
+  rideId: string,
+  requesterId: string
+): Promise<{ success: boolean; message: string }> {
+  try {
+    const docClient = await getDocClient();
+    const ride = await getRideById(rideId);
+    if (!ride) return { success: false, message: "Ride not found." };
+
+    const pendingIds = (ride.pendingRequestIds ?? []).filter((id) => id !== requesterId);
+    const pendingNames = (ride.pendingRequestNames ?? []).filter((_, i) =>
+      (ride.pendingRequestIds ?? [])[i] !== requesterId
+    );
+
+    await docClient.send(
+      new UpdateCommand({
+        TableName: RIDES_TABLE,
+        Key: { rideId },
+        UpdateExpression:
+          "SET pendingRequestIds = :pids, pendingRequestNames = :pnames, #ua = :ua",
+        ExpressionAttributeNames: { "#ua": "updatedAt" },
+        ExpressionAttributeValues: {
+          ":pids": pendingIds,
+          ":pnames": pendingNames,
+          ":ua": new Date().toISOString(),
+        },
+      })
+    );
+    return { success: true, message: "Request declined." };
+  } catch (err) {
+    return { success: false, message: "Failed to decline." };
   }
 }

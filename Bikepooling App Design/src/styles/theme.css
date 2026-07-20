@@ -2,50 +2,50 @@
 
 :root {
   --font-size: 16px;
-  /* Ocean Breeze — Frosted Glass */
-  --background: linear-gradient(135deg, #f5f3ff 0%, #e0e7ff 30%, #e0f2fe 70%, #eff6ff 100%);
-  --background-solid: #faf9ff;
-  --foreground: #09132c;
-  --card: rgba(255, 255, 255, 0.55);
-  --card-foreground: #0c1e3a;
-  --popover: rgba(255, 255, 255, 0.65);
-  --popover-foreground: #0c1e3a;
-  --primary: #3b82f6;
+  /* Warm Sand & Violet — Premium Light */
+  --background: linear-gradient(145deg, #fdf8f3 0%, #f5f0ff 40%, #fef3e8 75%, #fdf8f3 100%);
+  --background-solid: #fdf8f3;
+  --foreground: #1a1025;
+  --card: rgba(255, 252, 248, 0.72);
+  --card-foreground: #1a1025;
+  --popover: rgba(255, 252, 248, 0.88);
+  --popover-foreground: #1a1025;
+  --primary: #6d28d9;
   --primary-foreground: #ffffff;
-  --secondary: rgba(219, 234, 254, 0.6);
-  --secondary-foreground: #1e40af;
-  --muted: rgba(191, 219, 254, 0.5);
-  --muted-foreground: #64748b;
-  --accent: #06b6d4;
+  --secondary: rgba(237, 233, 254, 0.65);
+  --secondary-foreground: #4c1d95;
+  --muted: rgba(221, 214, 254, 0.45);
+  --muted-foreground: #6b7280;
+  --accent: #f59e0b;
   --accent-foreground: #ffffff;
   --destructive: #ef4444;
   --destructive-foreground: #ffffff;
-  --border: rgba(59, 130, 246, 0.12);
+  --border: rgba(109, 40, 217, 0.10);
   --input: transparent;
-  --input-background: rgba(240, 249, 255, 0.6);
-  --switch-background: rgba(147, 197, 253, 0.5);
+  --input-background: rgba(245, 240, 255, 0.65);
+  --switch-background: rgba(196, 181, 253, 0.5);
   --font-weight-medium: 500;
   --font-weight-normal: 400;
-  --ring: #3b82f6;
-  --chart-1: #3b82f6;
-  --chart-2: #06b6d4;
-  --chart-3: #8b5cf6;
-  --chart-4: #f59e0b;
-  --chart-5: #ec4899;
+  --ring: #6d28d9;
+  --chart-1: #6d28d9;
+  --chart-2: #f59e0b;
+  --chart-3: #10b981;
+  --chart-4: #ec4899;
+  --chart-5: #06b6d4;
   --radius: 1rem;
-  --sidebar: rgba(240, 249, 255, 0.5);
-  --sidebar-foreground: #0c1e3a;
-  --sidebar-primary: #3b82f6;
+  --sidebar: rgba(245, 240, 255, 0.5);
+  --sidebar-foreground: #1a1025;
+  --sidebar-primary: #6d28d9;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: rgba(191, 219, 254, 0.5);
-  --sidebar-accent-foreground: #1e40af;
-  --sidebar-border: rgba(59, 130, 246, 0.1);
-  --sidebar-ring: #3b82f6;
+  --sidebar-accent: rgba(221, 214, 254, 0.5);
+  --sidebar-accent-foreground: #4c1d95;
+  --sidebar-border: rgba(109, 40, 217, 0.08);
+  --sidebar-ring: #6d28d9;
   /* Glass tokens */
-  --glass-bg: rgba(255, 255, 255, 0.42);
-  --glass-bg-strong: rgba(255, 255, 255, 0.62);
-  --glass-border: rgba(255, 255, 255, 0.55);
-  --glass-shadow: 0 8px 32px rgba(59, 130, 246, 0.07), 0 0 0 1px rgba(255, 255, 255, 0.45);
+  --glass-bg: rgba(255, 252, 248, 0.52);
+  --glass-bg-strong: rgba(255, 252, 248, 0.78);
+  --glass-border: rgba(255, 255, 255, 0.70);
+  --glass-shadow: 0 8px 32px rgba(109, 40, 217, 0.06), 0 0 0 1px rgba(255, 255, 255, 0.55);
   --glass-blur: blur(20px);
   --glass-blur-heavy: blur(40px);
 }
@@ -234,20 +234,67 @@
     animation: ride 9s linear infinite;
   }
 
-  @keyframes cruise-vehicle {
-    0% { left: -30%; }
-    100% { left: 115%; }
+  /* ── Vehicle cruise animations (search bar) ──────────── */
+  @keyframes cruise-v1 { 0% { left: -15%; } 100% { left: 110%; } }
+  @keyframes cruise-v2 { 0% { left: -20%; } 100% { left: 115%; } }
+  @keyframes cruise-v3 { 0% { left: -10%; } 100% { left: 112%; } }
+  @keyframes cruise-v4 { 0% { left: -12%; } 100% { left: 110%; } }
+  @keyframes cruise-v5 { 0% { left: -8%;  } 100% { left: 112%; } }
+
+  /* Bike (slow lane) */
+  .animate-vehicle-1 {
+    position: absolute;
+    bottom: 2px;
+    animation: cruise-v1 7s linear infinite;
+  }
+  /* Scooter */
+  .animate-vehicle-2 {
+    position: absolute;
+    bottom: 2px;
+    animation: cruise-v2 5s linear infinite;
+    animation-delay: -1.8s;
+  }
+  /* Car */
+  .animate-vehicle-3 {
+    position: absolute;
+    bottom: 2px;
+    animation: cruise-v3 4.2s linear infinite;
+    animation-delay: -2.5s;
+  }
+  /* Motorcycle */
+  .animate-vehicle-4 {
+    position: absolute;
+    bottom: 2px;
+    animation: cruise-v4 4.8s linear infinite;
+    animation-delay: -0.8s;
+  }
+  /* Auto rickshaw */
+  .animate-vehicle-5 {
+    position: absolute;
+    bottom: 2px;
+    animation: cruise-v5 6s linear infinite;
+    animation-delay: -3.2s;
   }
 
-  .animate-cruise-slow {
-    position: absolute;
-    animation: cruise-vehicle 18s linear infinite;
+  /* ── Stat card shimmer / count-up feel ───────────────── */
+  @keyframes stat-pop {
+    0%   { transform: scale(0.85); opacity: 0.4; }
+    60%  { transform: scale(1.08); opacity: 1;   }
+    100% { transform: scale(1);    opacity: 1;   }
   }
-
-  .animate-cruise-fast {
-    position: absolute;
-    animation: cruise-vehicle 11s linear infinite;
-    animation-delay: -5.5s;
+  .animate-stat-pop {
+    animation: stat-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  }
+  @keyframes shimmer-slide {
+    0%   { background-position: -200% center; }
+    100% { background-position: 200% center;  }
+  }
+  .animate-shimmer {
+    background: linear-gradient(90deg,
+      transparent 0%, rgba(255,255,255,0.4) 50%, transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer-slide 2.5s ease-in-out infinite;
   }
 }
 

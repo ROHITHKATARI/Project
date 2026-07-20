@@ -109,7 +109,7 @@ export async function requestUserLocation(): Promise<UserLocation | null> {
         resolve(loc);
       },
       () => resolve(null), // User denied or timed out
-      { timeout: 8000, enableHighAccuracy: false, maximumAge: 300_000 }
+      { timeout: 15000, enableHighAccuracy: false, maximumAge: 300_000 }
     );
   });
 }
