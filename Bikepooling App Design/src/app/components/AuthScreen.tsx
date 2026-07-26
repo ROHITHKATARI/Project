@@ -74,6 +74,8 @@ export function AuthScreen({ onAuth, isDark, toggleTheme, oauthError, onClearOau
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resendCooldown, setResendCooldown] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [showTerms, setShowTerms] = useState(false);
 
   // Show Google OAuth errors as a local error banner
   useEffect(() => {
@@ -89,6 +91,7 @@ export function AuthScreen({ onAuth, isDark, toggleTheme, oauthError, onClearOau
     if (!form.name.trim()) { setError("Please enter your full name."); return; }
     if (!form.emailOrPhone.trim()) { setError("Please enter your email address."); return; }
     if (form.password.length < 8) { setError("Password must be at least 8 characters."); return; }
+    if (!termsAccepted) { setError("Please accept the Terms & Conditions to continue."); return; }
     setLoading(true);
     try {
       await registerWithEmail(form.name.trim(), form.emailOrPhone.trim(), form.password);
@@ -224,6 +227,73 @@ export function AuthScreen({ onAuth, isDark, toggleTheme, oauthError, onClearOau
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4 md:p-8 bg-background transition-colors duration-300">
+
+      {/* ── Terms & Conditions Modal ───────────────────────────────────── */}
+      {showTerms && (
+        <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowTerms(false)}>
+          <div
+            className="w-full max-w-lg rounded-t-3xl shadow-2xl max-h-[88vh] overflow-y-auto"
+            style={{ background: "var(--card)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1 rounded-full" style={{ background: "var(--border)" }} /></div>
+            <div className="px-6 py-4 sticky top-0 z-10 flex items-center justify-between border-b" style={{ background: "var(--card)", borderColor: "var(--border)" }}>
+              <p className="font-bold text-base" style={{ color: "var(--foreground)" }}>Terms & Conditions</p>
+              <button onClick={() => setShowTerms(false)} className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: "var(--secondary)" }}>
+                <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2}><path d="M18 6L6 18M6 6l12 12"/></svg>
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-5 pb-10 text-sm" style={{ color: "var(--foreground)" }}>
+              <div className="rounded-xl p-3.5 text-xs" style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.25)" }}>
+                <p className="font-bold text-amber-600 mb-1">Platform Purpose</p>
+                <p style={{ color: "var(--muted-foreground)", lineHeight: 1.7 }}>
+                  DostWheels is a community ride-sharing platform that helps commuters share travel expenses, reduce traffic congestion, and reduce pollution. The platform is intended solely for cost-sharing among users already traveling in the same direction.
+                </p>
+              </div>
+
+              <section>
+                <h3 className="font-bold text-sm mb-2" style={{ color: "var(--foreground)" }}>Ride-Sharing Policy</h3>
+                <ul className="space-y-2 text-xs" style={{ color: "var(--muted-foreground)", lineHeight: 1.7 }}>
+                  <li className="flex items-start gap-2"><span className="text-green-500 font-bold mt-0.5">✓</span> Drivers must already be making the trip — you cannot post rides purely to earn money.</li>
+                  <li className="flex items-start gap-2"><span className="text-green-500 font-bold mt-0.5">✓</span> Rider contributions are limited to sharing trip expenses (fuel, tolls, etc.).</li>
+                  <li className="flex items-start gap-2"><span className="text-red-500 font-bold mt-0.5">✗</span> Commercial passenger transport or profit-making using private vehicles is prohibited.</li>
+                  <li className="flex items-start gap-2"><span className="text-red-500 font-bold mt-0.5">✗</span> Violations may result in immediate account suspension.</li>
+                </ul>
+              </section>
+
+              <section>
+                <h3 className="font-bold text-sm mb-2" style={{ color: "var(--foreground)" }}>User Responsibilities</h3>
+                <p className="text-xs" style={{ color: "var(--muted-foreground)", lineHeight: 1.7 }}>
+                  Users must provide accurate information, treat fellow riders with respect, and comply with all applicable traffic laws. DostWheels reserves the right to suspend or terminate accounts for violations of these terms.
+                </p>
+              </section>
+
+              <section>
+                <h3 className="font-bold text-sm mb-2" style={{ color: "var(--foreground)" }}>Safety & Liability</h3>
+                <p className="text-xs" style={{ color: "var(--muted-foreground)", lineHeight: 1.7 }}>
+                  DostWheels is a technology platform connecting riders and drivers. We are not a transportation company. Users are solely responsible for the safety of rides arranged through the platform.
+                </p>
+              </section>
+
+              <section>
+                <h3 className="font-bold text-sm mb-2" style={{ color: "var(--foreground)" }}>Privacy</h3>
+                <p className="text-xs" style={{ color: "var(--muted-foreground)", lineHeight: 1.7 }}>
+                  Your name, contact information, and location are shared with ride co-participants only. We do not sell your personal data to third parties.
+                </p>
+              </section>
+
+              <button
+                onClick={() => { setTermsAccepted(true); setShowTerms(false); }}
+                className="w-full py-3.5 rounded-xl font-bold text-sm text-white shadow-md"
+                style={{ background: "var(--primary)" }}
+              >
+                I Accept — Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="w-full max-w-5xl glass-card overflow-hidden grid grid-cols-1 md:grid-cols-12 shadow-2xl rounded-[28px]">
         
         {/* BRAND PANEL */}
@@ -559,6 +629,31 @@ export function AuthScreen({ onAuth, isDark, toggleTheme, oauthError, onClearOau
                       {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
                   </div>
+
+                  {/* ── Terms checkbox (register only) ─── */}
+                  {tab === "register" && (
+                    <div className="rounded-xl border border-amber-400/30 bg-amber-400/5 p-3.5 space-y-2">
+                      <label className="flex items-start gap-3 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={termsAccepted}
+                          onChange={(e) => { setTermsAccepted(e.target.checked); clearError(); }}
+                          className="mt-0.5 rounded border-border text-primary focus:ring-primary/20 accent-primary flex-shrink-0"
+                        />
+                        <span className="text-xs text-muted-foreground leading-relaxed">
+                          I understand that <strong className="text-foreground">DostWheels</strong> is a ride-sharing platform for sharing travel expenses only. Commercial taxi operations or earning profit from private vehicles are{" "}
+                          <strong className="text-foreground">not permitted</strong>.
+                        </span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setShowTerms(true)}
+                        className="text-[10px] text-primary hover:underline font-semibold ml-6"
+                      >
+                        Read full Terms & Conditions →
+                      </button>
+                    </div>
+                  )}
 
                   {/* Remember & Forgot Row */}
                   <div className="flex items-center justify-between text-xs py-1">

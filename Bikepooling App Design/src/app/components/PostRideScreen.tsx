@@ -346,6 +346,22 @@ export function PostRideScreen({ onPosted, userId, userName, userLocation, onGoT
             )}
           </div>
 
+          {/* Cost-sharing policy notice */}
+          <div className="rounded-2xl p-4 space-y-2" style={{ background: "rgba(245,158,11,0.07)", border: "1px solid rgba(245,158,11,0.25)" }}>
+            <div className="flex items-center gap-2">
+              <span className="text-base">⚖️</span>
+              <p style={{ fontWeight: 700, fontSize: "0.82rem", color: "#b45309" }}>Cost-sharing only</p>
+            </div>
+            <p style={{ fontSize: "0.76rem", color: "var(--muted-foreground)", lineHeight: 1.65 }}>
+              By posting this ride, you confirm that:
+            </p>
+            <ul style={{ fontSize: "0.75rem", color: "var(--muted-foreground)", lineHeight: 1.7, paddingLeft: "1rem", listStyleType: "disc" }}>
+              <li>You are already planning this trip.</li>
+              <li>Rider contributions are only to share travel expenses.</li>
+              <li>You will not use DostWheels for commercial taxi operations or profit-making.</li>
+            </ul>
+          </div>
+
           <div className="flex gap-3">
             <button onClick={() => setStep(1)} className="flex-1 py-3.5 rounded-xl border transition-all hover:border-primary"
               style={{ borderColor: "var(--border)", color: "var(--foreground)", fontWeight: 600 }}>Back</button>

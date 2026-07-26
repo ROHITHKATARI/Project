@@ -1,15 +1,21 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, Component } from "react";
 import {
   Bell, SlidersHorizontal, MapPin, ShieldCheck, Star,
   ChevronRight, Zap, Clock, RefreshCw, Loader2, X, Calendar, Send, CheckCircle2,
 } from "lucide-react";
+import { Capacitor } from "@capacitor/core";
 import {
   APIProvider, Map, AdvancedMarker, Pin, useMap, useMapsLibrary,
 } from "@vis.gl/react-google-maps";
+// Leaflet CSS is mandatory — without it tiles render without position/z-index,
+// causing the "overlapping tiles" bug seen on Android.
+import "leaflet/dist/leaflet.css";
 import { PlacesAutocomplete } from "./PlacesAutocomplete";
 import { getAllOpenRides, sendJoinRequest, type RidePost } from "../../lib/ridesDb";
 import { UserLocation } from "../../lib/locationService";
 
+// ── Platform detection ────────────────────────────────────────────────
+const IS_NATIVE = Capacitor.isNativePlatform();
 const GOOGLE_MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_KEY as string;
 const NEARBY_RADIUS_KM = 25;
 
@@ -53,7 +59,149 @@ function formatTime(t: string): string {
 const AVATAR_COLORS = ["#2E5BFF","#8b5cf6","#14b8a6","#ec4899","#f59e0b","#10b981","#f97316"];
 function getAvatarColor(name: string) { return AVATAR_COLORS[name.charCodeAt(0) % AVATAR_COLORS.length]; }
 
-// ─── Route Polyline (inside <Map>) ───────────────────────────────────────────
+// ─── Map Error Boundary ───────────────────────────────────────────────────────
+class MapErrorBoundary extends Component<
+  { children: React.ReactNode; fallback?: React.ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { children: React.ReactNode; fallback?: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() { return { hasError: true }; }
+  componentDidCatch(error: Error) { console.error("[Map] error caught:", error.message); }
+  render() {
+    if (this.state.hasError) {
+      return this.props.fallback ?? (
+        <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column",
+          alignItems: "center", justifyContent: "center", background: "var(--card)", gap: 8 }}>
+          <MapPin size={28} style={{ color: "#9297AC" }} />
+          <p style={{ color: "#9297AC", fontSize: 13 }}>Map unavailable</p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// ─── Leaflet Map (Android / native) ──────────────────────────────────────────
+// Uses OpenStreetMap tiles — no API key, no referrer restrictions.
+// Leaflet CSS is imported statically above (mandatory for correct tile rendering).
+function LeafletMap({ userLocation, rides }: {
+  userLocation: UserLocation | null;
+  rides: { ride: RidePost; distKm: number | null }[];
+}) {
+  const center: [number, number] = userLocation
+    ? [userLocation.lat, userLocation.lng]
+    : [17.385, 78.4867];
+
+  const [MapComponents, setMapComponents] = useState<{
+    MapContainer: typeof import("react-leaflet")["MapContainer"];
+    TileLayer: typeof import("react-leaflet")["TileLayer"];
+    Marker: typeof import("react-leaflet")["Marker"];
+    useMap: typeof import("react-leaflet")["useMap"];
+    L: typeof import("leaflet");
+  } | null>(null);
+
+  // Load react-leaflet + leaflet once on mount
+  useEffect(() => {
+    Promise.all([import("react-leaflet"), import("leaflet")])
+      .then(([rl, L]) => {
+        // Fix default marker icons (Leaflet + Vite/webpack bundler issue)
+        (L.default.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl = undefined;
+        L.default.Icon.Default.mergeOptions({
+          iconRetinaUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png",
+          iconUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png",
+          shadowUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
+        });
+        setMapComponents({
+          MapContainer: rl.MapContainer,
+          TileLayer: rl.TileLayer,
+          Marker: rl.Marker,
+          useMap: rl.useMap,
+          L: L.default,
+        });
+      })
+      .catch(console.error);
+  }, []);
+
+  if (!MapComponents) {
+    return (
+      <div style={{ width: "100%", height: "100%", display: "flex",
+        alignItems: "center", justifyContent: "center", background: "var(--card)" }}>
+        <Loader2 size={24} className="animate-spin" style={{ color: "#2E5BFF" }} />
+      </div>
+    );
+  }
+
+  const { MapContainer, TileLayer, Marker, useMap: useLeafletMap, L } = MapComponents;
+
+  // MapSizer: calls invalidateSize() after mount to fix tile layout
+  // on Android where the container dimensions may not be known at init time.
+  function MapSizer() {
+    const map = useLeafletMap();
+    useEffect(() => {
+      if (!map) return;
+      // Brief delay ensures the container has final dimensions before resize
+      const t = setTimeout(() => { map.invalidateSize(); }, 150);
+      return () => clearTimeout(t);
+    }, [map]);
+    return null;
+  }
+
+  const userIcon = L.divIcon({
+    className: "",
+    html: `<div style="width:18px;height:18px;border-radius:50%;background:#2E5BFF;border:3px solid white;box-shadow:0 0 0 6px rgba(46,91,255,0.28),0 2px 8px rgba(0,0,0,0.3)"></div>`,
+    iconSize: [18, 18],
+    iconAnchor: [9, 9],
+  });
+
+  const rideIcon = L.divIcon({
+    className: "",
+    html: `<div style="width:16px;height:16px;border-radius:50%;background:#FFB020;border:2.5px solid #d97706;box-shadow:0 2px 6px rgba(0,0,0,0.3)"></div>`,
+    iconSize: [16, 16],
+    iconAnchor: [8, 8],
+  });
+
+  return (
+    <MapContainer
+      center={center}
+      zoom={13}
+      // width/height fills the 280px parent container.
+      // zIndex:0 forces leaflet-container to create its own CSS stacking context
+      // (position:relative + integer z-index = new stacking context).
+      // Without this, Leaflet's internal panes (tile-pane z-200, overlay-pane z-400…)
+      // bleed into the parent stacking order and render ON TOP of the greeting/
+      // notification divs that have z-10 (z-index:10). With zIndex:0 here, all
+      // internal Leaflet z-indices stay inside the map's stacking context, and
+      // the parent's z-10 elements (greeting, bell, search bar) appear above the map.
+      style={{ width: "100%", height: "100%", zIndex: 0 }}
+      zoomControl={false}
+      attributionControl={false}
+    >
+      <MapSizer />
+      <TileLayer
+        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        attribution=""
+      />
+      {rides.map(({ ride }) =>
+        ride.fromCoords ? (
+          <Marker
+            key={`pin-${ride.rideId}`}
+            position={[ride.fromCoords.lat, ride.fromCoords.lng]}
+            icon={rideIcon}
+          />
+        ) : null
+      )}
+      {userLocation && (
+        <Marker position={[userLocation.lat, userLocation.lng]} icon={userIcon} />
+      )}
+    </MapContainer>
+  );
+}
+
+
+// ─── Google Maps (Web) ───────────────────────────────────────────────────────
 function RoutePolyline({ fromCoords, toAddress }: { fromCoords: { lat: number; lng: number }; toAddress: string }) {
   const map = useMap();
   const routesLib = useMapsLibrary("routes");
@@ -78,29 +226,66 @@ function RoutePolyline({ fromCoords, toAddress }: { fromCoords: { lat: number; l
   return null;
 }
 
-// ─── Home Map Inner (inside APIProvider) ─────────────────────────────────────
-function HomeMapInner({ userLocation, rides }: { userLocation: UserLocation | null; rides: { ride: RidePost; distKm: number | null }[] }) {
-  const center = userLocation ? { lat: userLocation.lat, lng: userLocation.lng } : { lat: 17.385, lng: 78.4867 };
+function MapCenterer({ userLocation }: { userLocation: UserLocation | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (map && userLocation) map.panTo({ lat: userLocation.lat, lng: userLocation.lng });
+  }, [map, userLocation]);
+  return null;
+}
+
+function GoogleMapInner({ userLocation, rides }: {
+  userLocation: UserLocation | null;
+  rides: { ride: RidePost; distKm: number | null }[];
+}) {
+  const defaultCenter = userLocation
+    ? { lat: userLocation.lat, lng: userLocation.lng }
+    : { lat: 17.385, lng: 78.4867 };
   return (
-    <Map mapId="bikepooling-home-map" defaultCenter={center} center={center} defaultZoom={13}
+    <Map mapId="bikepooling-home-map" defaultCenter={defaultCenter} defaultZoom={13}
       gestureHandling="greedy" disableDefaultUI={true}
       style={{ width: "100%", height: "100%" }} colorScheme="FOLLOW_SYSTEM">
+      <MapCenterer userLocation={userLocation} />
       {rides.map(({ ride }) => ride.fromCoords ? (
         <RoutePolyline key={`route-${ride.rideId}`} fromCoords={ride.fromCoords} toAddress={ride.to} />
       ) : null)}
       {rides.map(({ ride }) => ride.fromCoords ? (
-        <AdvancedMarker key={`pin-${ride.rideId}`} position={{ lat: ride.fromCoords.lat, lng: ride.fromCoords.lng }}
-          title={`${ride.posterName}: ${ride.from} to ${ride.to}`}>
+        <AdvancedMarker key={`pin-${ride.rideId}`}
+          position={{ lat: ride.fromCoords.lat, lng: ride.fromCoords.lng }}
+          title={`${ride.posterName}: ${ride.from} → ${ride.to}`}>
           <Pin background="#FFB020" borderColor="#d97706" glyphColor="#fff" scale={0.9} />
         </AdvancedMarker>
       ) : null)}
       {userLocation && (
         <AdvancedMarker position={{ lat: userLocation.lat, lng: userLocation.lng }}>
-          <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#2E5BFF", border: "3px solid white",
-            boxShadow: "0 0 0 6px rgba(46,91,255,0.28), 0 2px 8px rgba(0,0,0,0.3)" }} />
+          <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#2E5BFF",
+            border: "3px solid white", boxShadow: "0 0 0 6px rgba(46,91,255,0.28), 0 2px 8px rgba(0,0,0,0.3)" }} />
         </AdvancedMarker>
       )}
     </Map>
+  );
+}
+
+// ─── Platform-aware Map Router ────────────────────────────────────────────────
+function HomeMap({
+  userLocation, rides,
+}: {
+  userLocation: UserLocation | null;
+  rides: { ride: RidePost; distKm: number | null }[];
+}) {
+  if (IS_NATIVE) {
+    return (
+      <MapErrorBoundary>
+        <LeafletMap userLocation={userLocation} rides={rides} />
+      </MapErrorBoundary>
+    );
+  }
+  return (
+    <MapErrorBoundary>
+      <APIProvider apiKey={GOOGLE_MAPS_KEY} libraries={["places", "routes"]}>
+        <GoogleMapInner userLocation={userLocation} rides={rides} />
+      </APIProvider>
+    </MapErrorBoundary>
   );
 }
 
@@ -348,15 +533,31 @@ export function HomeScreen({ user, onRequestRide, userLocation, onGoProfile, onN
       <SearchDrawer open={showSearch} onClose={() => setShowSearch(false)} onApply={(f) => setFilters(f)} allRides={allRides} />
 
       {/* MAP HEADER */}
-      <div className="relative" style={{ height: 280, flexShrink: 0 }}>
-        <APIProvider apiKey={GOOGLE_MAPS_KEY}>
-          <HomeMapInner userLocation={userLocation ?? null} rides={displayRides} />
-        </APIProvider>
+      {/*
+        isolation:isolate creates a new stacking context for the map wrapper.
+        This traps Leaflet's internal panes (tile-pane z-200, overlay-pane z-400,
+        etc.) inside the map's own stacking context so they cannot paint on top
+        of the greeting / bell / search bar overlays that live alongside the map.
+      */}
+      <div className="relative" style={{ height: 280, flexShrink: 0, isolation: "isolate" }}>
+        {/* Leaflet CSS — injected only on Android */}
+        {IS_NATIVE && (
+          <style>{`
+            .leaflet-container { background: #e8edf3; }
+            .leaflet-tile-pane { -webkit-filter: none; filter: none; }
+          `}</style>
+        )}
+        {/* Map fills the container; its z-index:0 keeps it at the bottom of
+            this isolated stacking context. All overlay divs below use
+            position:absolute with a z-index > 0 to stay on top. */}
+        <div style={{ position: "absolute", inset: 0, zIndex: 0 }}>
+          <HomeMap userLocation={userLocation ?? null} rides={displayRides} />
+        </div>
         <div className="absolute inset-x-0 bottom-0 h-20 pointer-events-none"
-          style={{ background: "linear-gradient(to top, var(--background-solid) 0%, transparent 100%)" }} />
+          style={{ background: "linear-gradient(to top, var(--background-solid) 0%, transparent 100%)", zIndex: 1 }} />
 
         {/* Greeting + Bell */}
-        <div className="absolute top-4 left-4 right-4 flex items-start justify-between z-10">
+        <div className="absolute top-4 left-4 right-4 flex items-start justify-between" style={{ zIndex: 10 }}>
           <div className="px-3.5 py-2 rounded-2xl" style={{ background: "rgba(20,18,43,0.72)", backdropFilter: "blur(14px)" }}>
             <p className="text-[11px] font-medium" style={{ color: "rgba(255,255,255,0.6)" }}>{greeting}</p>
             <h1 className="text-white leading-tight font-semibold" style={{ fontSize: "1.15rem", fontFamily: "'Space Grotesk', sans-serif" }}>
@@ -375,7 +576,7 @@ export function HomeScreen({ user, onRequestRide, userLocation, onGoProfile, onN
         </div>
 
         {/* Location tag */}
-        <div className="absolute z-10" style={{ top: 76, left: 16 }}>
+        <div className="absolute" style={{ top: 76, left: 16, zIndex: 10 }}>
           <div className="flex items-center gap-1 text-[11px] font-medium px-2.5 py-1 rounded-full"
             style={{ background: "rgba(20,18,43,0.65)", backdropFilter: "blur(10px)", color: "rgba(255,255,255,0.8)" }}>
             <MapPin size={11} style={{ color: "#FFB020" }} />
@@ -385,7 +586,7 @@ export function HomeScreen({ user, onRequestRide, userLocation, onGoProfile, onN
         </div>
 
         {/* Rider count badge — green dot = live, no redundant 'Live' text */}
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10">
+        <div className="absolute top-4 left-1/2 -translate-x-1/2" style={{ zIndex: 10 }}>
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full"
             style={{ background: "rgba(0,0,0,0.52)", backdropFilter: "blur(10px)" }}>
             <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: refreshing ? "#FFB020" : "#4ADE80" }} />
@@ -396,7 +597,7 @@ export function HomeScreen({ user, onRequestRide, userLocation, onGoProfile, onN
         </div>
 
         {/* Floating Search Bar — Google Places autocomplete */}
-        <div className="absolute bottom-5 left-4 right-4 z-10">
+        <div className="absolute bottom-5 left-4 right-4" style={{ zIndex: 10 }}>
           <div className="flex items-center gap-2 rounded-2xl px-4 py-3"
             style={{ background: "var(--card)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", boxShadow: "0 8px 32px rgba(20,18,43,0.18)", border: "1px solid var(--glass-border)" }}>
             <div className="flex-1 min-w-0">

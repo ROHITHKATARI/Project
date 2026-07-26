@@ -11,6 +11,8 @@ import {
   resetPassword,
   confirmResetPassword,
 } from "aws-amplify/auth";
+import { Capacitor } from "@capacitor/core";
+import { startNativeGoogleSignIn } from "./nativeOAuth";
 
 // ─── Types ────────────────────────────────────────────────────────────
 export interface AuthUser {
@@ -105,10 +107,29 @@ export async function loginWithEmail(
   }
 }
 
-/** Trigger Google OAuth via Cognito Hosted UI */
+/** Trigger Google OAuth via Cognito Hosted UI.
+ *
+ * ANDROID: Uses a fully manual PKCE flow (nativeOAuth.ts) that opens
+ * Cognito in @capacitor/browser with redirect_uri=dostwheels://callback.
+ * This avoids ERR_CONNECTION_REFUSED which occurs when Cognito's Chrome
+ * Custom Tab tries to redirect to http://localhost (unreachable externally).
+ *
+ * The dostwheels://callback URI is caught by the Android intent-filter
+ * in AndroidManifest.xml → Capacitor fires appUrlOpen → App.tsx calls
+ * exchangeNativeOAuthCode() to complete the token exchange.
+ *
+ * WEB: Uses Amplify's built-in signInWithRedirect (standard web flow).
+ */
 export async function signInWithGoogle(): Promise<void> {
   try {
-    await signInWithRedirect({ provider: "Google" });
+    if (Capacitor.isNativePlatform()) {
+      // Native Android: manual PKCE flow via @capacitor/browser
+      await startNativeGoogleSignIn();
+      // Flow continues in App.tsx → appUrlOpen handler
+    } else {
+      // Web: standard Amplify redirect flow
+      await signInWithRedirect({ provider: "Google" });
+    }
   } catch (err) {
     throw new Error(friendlyError(err));
   }

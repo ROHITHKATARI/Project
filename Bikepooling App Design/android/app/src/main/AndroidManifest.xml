@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme"
+        android:usesCleartextTraffic="true">
+
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
+            android:name=".MainActivity"
+            android:label="@string/title_activity_main"
+            android:theme="@style/AppTheme.NoActionBarLaunch"
+            android:launchMode="singleTask"
+            android:exported="true">
+
+            <!-- Default launcher intent -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!--
+              ╔══════════════════════════════════════════════════════════╗
+              ║  COGNITO OAUTH DEEP LINK                                 ║
+              ║  Cognito Hosted UI redirects to dostwheels://callback    ║
+              ║  after Google sign-in. This intent-filter catches it.    ║
+              ║                                                          ║
+              ║  YOU MUST ALSO add this URL in Cognito App Client:       ║
+              ║    Allowed callback URLs → dostwheels://callback         ║
+              ║    Allowed sign-out URLs → dostwheels://callback         ║
+              ╚══════════════════════════════════════════════════════════╝
+            -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="dostwheels"
+                    android:host="callback" />
+            </intent-filter>
+
+        </activity>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"></meta-data>
+        </provider>
+
+        <!--
+          ╔══════════════════════════════════════════════════════════════╗
+          ║  GOOGLE MAPS API KEY                                         ║
+          ║  The VITE_GOOGLE_MAPS_KEY env variable is only used at       ║
+          ║  build time (injected into JS bundle). For native Android,   ║
+          ║  Google Maps SDK reads this meta-data tag at runtime.        ║
+          ║                                                              ║
+          ║  Replace YOUR_ANDROID_MAPS_KEY with an Android-restricted   ║
+          ║  API key from Google Cloud Console:                          ║
+          ║    Restrict → Android apps → add package name +             ║
+          ║    SHA-1 fingerprint from your debug / release keystore.     ║
+          ╚══════════════════════════════════════════════════════════════╝
+        -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="AIzaSyA2BAXl5IWhVeaMbY5Ned7aBx8z5R2z1gQ" />
+
+    </application>
+
+    <!-- Permissions -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+</manifest>

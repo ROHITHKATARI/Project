@@ -178,6 +178,17 @@ function DetailsTab({ ride, currentUserId }: { ride: RidePost; currentUserId: st
 
   return (
     <div className="space-y-4 pb-6">
+      {/* Cost-sharing info banner */}
+      <div
+        className="rounded-2xl p-3 flex items-center gap-2.5"
+        style={{ background: "rgba(59,130,246,0.06)", border: "1px solid rgba(59,130,246,0.15)" }}
+      >
+        <span className="text-base shrink-0">🚗</span>
+        <p className="text-xs font-medium" style={{ color: "var(--primary)", lineHeight: 1.5 }}>
+          This ride is for <strong>shared travel expenses only</strong> — not commercial transportation.
+        </p>
+      </div>
+
       {/* Member profile sheet */}
       {selectedMember && (
         <MemberProfileSheet

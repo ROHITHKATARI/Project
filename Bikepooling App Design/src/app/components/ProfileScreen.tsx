@@ -428,6 +428,7 @@ export function ProfileScreen({
   const [showVerify, setShowVerify] = useState(false);
   const [verificationStatus, setVerificationStatus] = useState<"none" | "pending" | "approved">("none");
   const [copiedCode, setCopiedCode] = useState(false);
+  const [showLegal, setShowLegal] = useState(false);
 
   const referCode = `ROHITH100`; // hardcoded as requested in image style
   const isVerified = verificationStatus === "approved";
@@ -453,6 +454,55 @@ export function ProfileScreen({
       {showPassport && <PassportOverlay user={{ ...user, avatar: localAvatar }} userLocation={userLocation} isVerified={isVerified} onClose={() => setShowPassport(false)} />}
       {(showAddVehicle || editingVehicle) && <AddVehicleModal initial={editingVehicle ?? undefined} onSave={editingVehicle ? handleEditVehicle : handleAddVehicle} onClose={() => { setShowAddVehicle(false); setEditingVehicle(null); }} />}
       {showVerify && <VerificationModal userId={user.id} onClose={() => setShowVerify(false)} onVerified={() => setVerificationStatus("pending")} />}
+
+      {/* ── Legal & Safety Modal ─────────────────────────────────────── */}
+      {showLegal && (
+        <div className="fixed inset-0 z-[90] flex items-end justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowLegal(false)}>
+          <div className="w-full max-w-lg rounded-t-3xl shadow-2xl max-h-[88vh] overflow-y-auto" style={{ background: "var(--card)" }} onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1 rounded-full" style={{ background: "var(--border)" }} /></div>
+            <div className="px-6 py-4 sticky top-0 z-10 flex items-center justify-between border-b" style={{ background: "var(--card)", borderColor: "var(--border)" }}>
+              <p className="font-bold text-base" style={{ fontFamily: "'Space Grotesk',sans-serif", color: "var(--foreground)" }}>Legal &amp; Safety</p>
+              <button onClick={() => setShowLegal(false)} className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: "var(--input-background)" }}><X size={16} style={{ color: "var(--muted-foreground)" }} /></button>
+            </div>
+            <div className="px-6 py-5 space-y-5 pb-10 text-sm" style={{ color: "var(--foreground)" }}>
+              <div className="rounded-xl p-3.5" style={{ background: "rgba(245,158,11,0.07)", border: "1px solid rgba(245,158,11,0.25)" }}>
+                <p className="font-bold text-amber-600 text-xs mb-1">About DostWheels</p>
+                <p className="text-xs" style={{ color: "var(--muted-foreground)", lineHeight: 1.7 }}>
+                  DostWheels is a community ride-sharing platform that helps commuters share travel expenses, reduce traffic congestion, and reduce pollution. The platform is intended solely for cost-sharing among users already traveling in the same direction. Commercial taxi operations or profit-making using private vehicles are not permitted.
+                </p>
+              </div>
+
+              <section>
+                <h3 className="font-bold text-sm mb-2" style={{ color: "var(--foreground)" }}>Ride-Sharing Policy</h3>
+                <ul className="space-y-2 text-xs" style={{ color: "var(--muted-foreground)", lineHeight: 1.7 }}>
+                  <li className="flex items-start gap-2"><span className="text-green-500 font-bold shrink-0">✓</span> Drivers must already be making the trip.</li>
+                  <li className="flex items-start gap-2"><span className="text-green-500 font-bold shrink-0">✓</span> Rider contributions are limited to sharing trip expenses only.</li>
+                  <li className="flex items-start gap-2"><span className="text-red-500 font-bold shrink-0">✗</span> Commercial passenger transport or profit-making is prohibited.</li>
+                  <li className="flex items-start gap-2"><span className="text-red-500 font-bold shrink-0">✗</span> Violations may result in account suspension.</li>
+                </ul>
+              </section>
+
+              <section>
+                <h3 className="font-bold text-sm mb-2" style={{ color: "var(--foreground)" }}>Safety Guidelines</h3>
+                <p className="text-xs" style={{ color: "var(--muted-foreground)", lineHeight: 1.7 }}>
+                  Always share your ride details with a trusted contact. Verify the rider's or driver's profile and rating before committing to a ride. DostWheels is not responsible for any incidents that occur during rides.
+                </p>
+              </section>
+
+              <section>
+                <h3 className="font-bold text-sm mb-2" style={{ color: "var(--foreground)" }}>Privacy Policy</h3>
+                <p className="text-xs" style={{ color: "var(--muted-foreground)", lineHeight: 1.7 }}>
+                  Your name, contact info, and location are shared only with your ride co-participants. We do not sell your data to third parties.
+                </p>
+              </section>
+
+              <button onClick={() => setShowLegal(false)} className="w-full py-3 rounded-xl font-semibold text-sm" style={{ background: "var(--secondary)", color: "var(--foreground)" }}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {confirmDeleteId && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center px-6 bg-black/50 backdrop-blur-sm" onClick={() => setConfirmDeleteId(null)}>
           <div className="w-full max-w-sm rounded-2xl p-6 space-y-4" style={{ background: "var(--card)" }} onClick={(e) => e.stopPropagation()}>
@@ -632,6 +682,7 @@ export function ProfileScreen({
             { icon: <Bell size={15} className="text-amber-400" />, label: "Notifications" },
             { icon: <Headphones size={15} className="text-blue-500" />, label: "Help Center" },
             { icon: <Settings size={15} className="text-gray-500" />, label: "Change Theme", onClick: toggleTheme },
+            { icon: <FileText size={15} className="text-orange-500" />, label: "Legal & Safety", onClick: () => setShowLegal(true) },
           ].map((item, i) => (
             <button key={i} onClick={item.onClick} className="flex items-center gap-3 p-3 rounded-[14px] border shadow-[0_2px_8px_rgba(0,0,0,0.02)] transition-colors text-left"
                     style={{ background: "var(--card)", borderColor: "var(--border)" }}>

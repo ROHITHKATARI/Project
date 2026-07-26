@@ -1,5 +1,6 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { Hub } from "aws-amplify/utils";
+import { App as CapApp } from "@capacitor/app";
 import { LoadingScreen } from "./components/LoadingScreen";
 import { NotificationsScreen } from "./components/NotificationsScreen";
 import { AuthScreen } from "./components/AuthScreen";
@@ -14,6 +15,7 @@ import { TandemBike } from "./components/ui/TandemBike";
 import { RideDetailScreen } from "./components/RideDetailScreen";
 import type { RidePost } from "../lib/ridesDb";
 import { getCurrentAuthUser, logoutUser, getAWSCredentials } from "../lib/auth";
+import { exchangeNativeOAuthCode } from "../lib/nativeOAuth";
 import { upsertUserProfile } from "../lib/userDb";
 import {
   requestUserLocation,
@@ -84,6 +86,7 @@ function AppShell({
   isDark,
   toggleTheme,
   userLocation,
+  onNavigateBack,
 }: {
   user: User;
   onLogout: () => void;
@@ -91,11 +94,44 @@ function AppShell({
   isDark: boolean;
   toggleTheme: () => void;
   userLocation: UserLocation | null;
+  onNavigateBack?: () => void;
 }) {
   const [screen, setScreen] = useState<Screen>("home");
+  const screenHistoryRef = React.useRef<Screen[]>(["home"]);
   const [showToast, setShowToast] = useState<string | null>(null);
   const [notifCount, setNotifCount] = useState(0);
   const [selectedRide, setSelectedRide] = useState<RidePost | null>(null);
+
+  // Navigate with history tracking for Android back button
+  const navigateTo = React.useCallback((s: Screen) => {
+    setScreen((prev) => {
+      if (prev !== s) {
+        screenHistoryRef.current.push(s);
+      }
+      return s;
+    });
+  }, []);
+
+  // Go back one step in screen history
+  const goBack = React.useCallback(() => {
+    if (selectedRide) { setSelectedRide(null); return; }
+    const history = screenHistoryRef.current;
+    if (history.length > 1) {
+      history.pop(); // remove current
+      const prev = history[history.length - 1];
+      setScreen(prev);
+    } else {
+      // At root — let parent handle (e.g. minimize app)
+      onNavigateBack?.();
+    }
+  }, [selectedRide, onNavigateBack]);
+
+  // Expose goBack to parent for hardware back button
+  React.useEffect(() => {
+    (AppShell as unknown as { _goBack?: () => void })._goBack = goBack;
+    return () => { (AppShell as unknown as { _goBack?: () => void })._goBack = undefined; };
+  }, [goBack]);
+
 
   const toast = (msg: string) => {
     setShowToast(msg);
@@ -107,7 +143,7 @@ function AppShell({
       typeof ride.rider === "string" ? ride.rider : ride.rider.name;
     // If triggered from the Post Ride button, navigate to post screen
     if (riderName === "post") {
-      setScreen("post");
+      navigateTo("post");
       return;
     }
     toast(`Request sent to ${riderName}! 🚲`);
@@ -199,7 +235,7 @@ function AppShell({
         {renderScreen()}
       </main>
 
-      <BottomNav active={screen} onNav={setScreen} />
+      <BottomNav active={screen} onNav={navigateTo} />
 
       {/* Ride detail overlay */}
       {selectedRide && (
@@ -241,6 +277,9 @@ export default function App() {
   const [googleLoading, setGoogleLoading] = useState(false);
   const [oauthError, setOauthError] = useState<string | null>(null);
   const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
+  // A lightweight repaint flag — does NOT remount AppShell (which would crash async ops)
+  const [, forceRepaint] = useState(0);
+  const appShellGoBackRef = React.useRef<(() => void) | null>(null);
 
   const [isDark, setIsDark] = useState(() => {
     if (typeof window !== "undefined") {
@@ -270,26 +309,41 @@ export default function App() {
     return () => mq.removeEventListener("change", h);
   }, []);
 
-  // ─── Session restore + Google OAuth callback ───────────────────────
+  // ─── Session restore + Google OAuth callback ──────────────────────
+  //
+  // ANDROID FLOW:
+  //   1. signInWithGoogle() opens Cognito in @capacitor/browser (Chrome Custom Tab)
+  //   2. The main WebView stays at http://localhost throughout
+  //   3. Cognito redirects to dostwheels://callback?code=...
+  //   4. Android fires appUrlOpen event (captured below)
+  //   5. We close the Browser tab and inject ?code=... into window.location
+  //   6. Amplify detects ?code= on the next tick and exchanges the token
+  //   7. Hub fires "signInWithRedirect" → processGoogleSignIn() completes login
+  //
+  // WEB FLOW:
+  //   1. signInWithRedirect() navigates window.location to Cognito
+  //   2. Cognito redirects back to http://localhost:5173/?code=...
+  //   3. App reloads with ?code= in URL → Amplify picks it up automatically
+  //   4. Hub fires "signInWithRedirect" → processGoogleSignIn() completes login
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const isOAuthCallback = params.has("code") || params.has("error");
     let handled = false;
 
-    // ── Retry getCurrentAuthUser (Amplify may need a moment after redirect) ──
-    const retryGetUser = async (maxRetries = 8, delay = 1000) => {
+    // ── Retry getCurrentAuthUser (Amplify may need a moment) ─────────
+    const retryGetUser = async (maxRetries = 10, delay = 800) => {
       for (let i = 0; i < maxRetries; i++) {
         try {
           const u = await getCurrentAuthUser();
           if (u) return u;
         } catch { /* keep retrying */ }
-        console.log(`[OAuth] getAuthUser attempt ${i + 1}/${maxRetries} returned null`);
+        console.log(`[OAuth] attempt ${i + 1}/${maxRetries}`);
         await new Promise((r) => setTimeout(r, delay));
       }
       return null;
     };
 
-    // ── Core processing after Google OAuth redirect ────────────────────
+    // ── Core sign-in processing ───────────────────────────────────────
     const processGoogleSignIn = async () => {
       if (handled) return;
       handled = true;
@@ -297,42 +351,32 @@ export default function App() {
       setOauthError(null);
 
       try {
-        // Step 1: Try credential refresh — non-blocking, don't fail if throws
-        try {
-          await getAWSCredentials(true);
-          console.log("[OAuth] Credentials refreshed");
-        } catch (e) {
+        try { await getAWSCredentials(true); } catch (e) {
           console.warn("[OAuth] getAWSCredentials non-fatal:", e);
         }
 
-        // Step 2: Get user — retry in case Amplify hasn't committed tokens yet
-        const authUser = await retryGetUser(8, 1000);
+        const authUser = await retryGetUser();
         console.log("[OAuth] authUser:", authUser);
 
-        if (!authUser) {
-          throw new Error("Could not retrieve user info after Google sign-in. Please try again.");
-        }
+        if (!authUser) throw new Error("Could not retrieve user after Google sign-in.");
 
-        // Step 3: Upsert DynamoDB profile — non-blocking fallback to raw authUser
         let profileData: { userId: string; name: string; email: string; avatar?: string };
         try {
-          const profile = await upsertUserProfile(
+          profileData = await upsertUserProfile(
             authUser.userId, authUser.name, authUser.email, "google", true
           );
-          profileData = profile;
         } catch (dbErr) {
           console.warn("[OAuth] upsertUserProfile non-fatal:", dbErr);
           profileData = { userId: authUser.userId, name: authUser.name, email: authUser.email };
         }
 
-        // Step 4: Success — navigate to home
         setUser({ id: profileData.userId, name: profileData.name, email: profileData.email, avatar: profileData.avatar });
         setShowLoading(true);
         requestUserLocation().then((loc) => { if (loc) setUserLocation(loc); });
 
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Google sign-in failed. Please try again.";
-        console.error("[OAuth] Pipeline error:", err);
+        const msg = err instanceof Error ? err.message : "Google sign-in failed.";
+        console.error("[OAuth] error:", err);
         setOauthError(msg);
       } finally {
         setGoogleLoading(false);
@@ -341,7 +385,7 @@ export default function App() {
       }
     };
 
-    // ── Hub listener — fires when Amplify finishes token exchange ──────
+    // ── Hub listener — Amplify fires this after token exchange ────────
     const unsubscribe = Hub.listen("auth", async ({ payload }) => {
       console.log("[Hub] auth event:", payload.event);
       if (payload.event === "signInWithRedirect") {
@@ -349,7 +393,7 @@ export default function App() {
       } else if (payload.event === "signInWithRedirect_failure") {
         handled = true;
         const msg = (payload.data as { message?: string })?.message || "Google sign-in failed.";
-        console.error("[OAuth] signInWithRedirect_failure:", payload);
+        console.error("[OAuth] failure:", payload);
         setOauthError(msg);
         setGoogleLoading(false);
         setInitializing(false);
@@ -357,21 +401,131 @@ export default function App() {
       }
     });
 
-    if (isOAuthCallback) {
-      // Show spinner while waiting; fallback if Hub event was missed
+    // ── Android: capture the dostwheels://callback deep link ──────────────
+    // This fires when @capacitor/browser (Chrome Custom Tab) receives the
+    // dostwheels://callback?code=... redirect from Cognito after Google auth.
+    //
+    // Flow:
+    //   1. signInWithGoogle() (native) → startNativeGoogleSignIn() → Browser.open(cognitoUrl)
+    //      with redirect_uri=dostwheels://callback
+    //   2. User authenticates with Google in the Chrome Custom Tab
+    //   3. Cognito redirects to dostwheels://callback?code=...&state=...
+    //   4. Android intent-filter intercepts → fires appUrlOpen
+    //   5. We close the Browser tab
+    //   6. We call exchangeNativeOAuthCode(code, state) which:
+    //      a. Validates the PKCE state
+    //      b. POSTs to Cognito /oauth2/token with code_verifier
+    //      c. Gets access_token + id_token + refresh_token
+    //      d. Stores tokens in Amplify's localStorage format
+    //      e. Returns user info (userId, email, name)
+    //   7. We upsert the user profile to DynamoDB
+    //   8. We set the user in React state → app shows home screen ✅
+    //
+    // NO page reload — the WebView stays alive and the app continues normally.
+    let urlOpenSub: Promise<{ remove: () => void }> | null = null;
+    let isMountedUrlOpen = true;
+
+    urlOpenSub = CapApp.addListener("appUrlOpen", async ({ url }) => {
+      console.log("[AppUrlOpen] received:", url);
+      if (!url.startsWith("dostwheels://callback")) return;
+
+      // Close the Chrome Custom Tab
+      try {
+        const { Browser } = await import("@capacitor/browser");
+        await Browser.close();
+      } catch { /* ignore if already closed */ }
+
+      if (!isMountedUrlOpen) return;
+
+      const cbUrl = new URL(url.replace("dostwheels://callback", "http://x"));
+      const code = cbUrl.searchParams.get("code");
+      const state = cbUrl.searchParams.get("state");
+      const error = cbUrl.searchParams.get("error");
+
+      if (error) {
+        setOauthError(`Google sign-in error: ${error}`);
+        setGoogleLoading(false);
+        setInitializing(false);
+        return;
+      }
+
+      if (!code || !state) {
+        setOauthError("Invalid OAuth callback — missing code or state.");
+        setGoogleLoading(false);
+        setInitializing(false);
+        return;
+      }
+
+      // Show loading spinner while we exchange the code
       setGoogleLoading(true);
+      setOauthError(null);
+
+      try {
+        // Manual PKCE token exchange (no Amplify signInWithRedirect needed)
+        const nativeUser = await exchangeNativeOAuthCode(code, state);
+        console.log("[AppUrlOpen] token exchange ok, user:", nativeUser.userId);
+
+        if (!isMountedUrlOpen) return;
+
+        // Get AWS credentials (Identity Pool) now that tokens are in localStorage
+        try { await getAWSCredentials(true); } catch (e) {
+          console.warn("[AppUrlOpen] getAWSCredentials non-fatal:", e);
+        }
+
+        // Upsert user profile to DynamoDB
+        let profileData: { userId: string; name: string; email: string; avatar?: string };
+        try {
+          profileData = await upsertUserProfile(
+            nativeUser.userId, nativeUser.name, nativeUser.email, "google", true
+          );
+        } catch (dbErr) {
+          console.warn("[AppUrlOpen] upsertUserProfile non-fatal:", dbErr);
+          profileData = { userId: nativeUser.userId, name: nativeUser.name, email: nativeUser.email };
+        }
+
+        if (!isMountedUrlOpen) return;
+
+        // Set user → triggers app to show home screen
+        setUser({ id: profileData.userId, name: profileData.name, email: profileData.email, avatar: profileData.avatar });
+        setShowLoading(true);
+        requestUserLocation().then((loc) => { if (loc && isMountedUrlOpen) setUserLocation(loc); });
+
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Google sign-in failed.";
+        console.error("[AppUrlOpen] error:", err);
+        if (isMountedUrlOpen) setOauthError(msg);
+      } finally {
+        if (isMountedUrlOpen) {
+          setGoogleLoading(false);
+          setInitializing(false);
+        }
+      }
+    });
+
+    if (isOAuthCallback) {
+      // Web: ?code= already in URL — Amplify will auto-process via Hub
+      setGoogleLoading(true);
+      let isMounted = true;
       const fallbackTimer = setTimeout(async () => {
-        if (!handled) {
+        if (!handled && isMounted) {
           console.warn("[OAuth] Hub never fired — running fallback");
           await processGoogleSignIn();
         }
-      }, 6000);
-      return () => { unsubscribe(); clearTimeout(fallbackTimer); };
+      }, 4000);
+      return () => {
+        isMounted = false;
+        isMountedUrlOpen = false;
+        unsubscribe();
+        clearTimeout(fallbackTimer);
+        urlOpenSub?.then((h) => h.remove());
+      };
     } else {
       // Normal page load — restore existing Cognito session
+      let isMounted = true;
       (async () => {
         try {
           const authUser = await getCurrentAuthUser();
+          if (!isMounted) return;
           if (authUser) {
             const isGoogle = authUser.userId.includes("google");
             try {
@@ -379,20 +533,52 @@ export default function App() {
                 authUser.userId, authUser.name, authUser.email,
                 isGoogle ? "google" : "email"
               );
+              if (!isMounted) return;
               setUser({ id: profile.userId, name: profile.name, email: profile.email, avatar: profile.avatar });
             } catch {
+              if (!isMounted) return;
               setUser({ id: authUser.userId, name: authUser.name, email: authUser.email });
             }
             // Always request location (returns cache if still fresh, otherwise fires GPS)
-            requestUserLocation().then((loc) => { if (loc) setUserLocation(loc); });
+            requestUserLocation().then((loc) => { if (loc && isMounted) setUserLocation(loc); });
           }
-        } catch { /* no session */ } finally { setInitializing(false); }
+        } catch { /* no session */ } finally { if (isMounted) setInitializing(false); }
       })();
-      return () => unsubscribe();
+      return () => {
+        isMounted = false;
+        isMountedUrlOpen = false;
+        unsubscribe();
+        urlOpenSub?.then((h) => h.remove());
+      };
     }
   }, []);
 
   const toggleTheme = () => setIsDark((p) => !p);
+
+  // ── Handle Android hardware back button ──────────────────────────────
+  useEffect(() => {
+    const sub = CapApp.addListener("backButton", () => {
+      // Delegate to AppShell's goBack if available
+      const shellGoBack = (AppShell as unknown as { _goBack?: () => void })._goBack;
+      if (shellGoBack) {
+        shellGoBack();
+      }
+      // If not in app shell (auth screen), do nothing (app stays open)
+    });
+    return () => { sub.then((h: { remove: () => void }) => h.remove()); };
+  }, []);
+
+  // ── Handle Android app resume (foreground) ────────────────────────────
+  // Trigger a lightweight re-render to repaint the WebView surface.
+  // We use forceRepaint (not a key prop) so components aren't remounted.
+  useEffect(() => {
+    const sub = CapApp.addListener("appStateChange", ({ isActive }: { isActive: boolean }) => {
+      if (isActive) {
+        forceRepaint((n) => n + 1);
+      }
+    });
+    return () => { sub.then((h: { remove: () => void }) => h.remove()); };
+  }, []);
 
   const handleAuth = (u: User) => {
     setUser(u);
