@@ -17,12 +17,30 @@ import { UserLocation } from "../../lib/locationService";
 // ── Platform detection ────────────────────────────────────────────────
 const IS_NATIVE = Capacitor.isNativePlatform();
 const GOOGLE_MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_KEY as string;
-const NEARBY_RADIUS_KM = 25;
+const NEARBY_RADIUS_KM = 25;   // rides list radius
+const MAP_RADIUS_KM = 2;       // route drawing radius
+
+// ── Route colour palette (one per ride on the map) ────────────────────
+const ROUTE_PALETTE = [
+  "#2E5BFF", // blue
+  "#10b981", // emerald
+  "#8b5cf6", // purple
+  "#f97316", // orange
+  "#06b6d4", // cyan
+  "#ec4899", // pink
+  "#f59e0b", // amber
+];
+function getRouteColor(index: number): string {
+  return ROUTE_PALETTE[index % ROUTE_PALETTE.length];
+}
 
 interface HomeScreenProps {
   user: { id: string; name: string; email: string; avatar?: string };
   onRequestRide: (ride: { rider: string }) => void;
+  onOpenRide?: (ride: RidePost) => void;
   userLocation?: UserLocation | null;
+  locationDenied?: boolean;
+  onRequestLocation?: () => void;
   onGoProfile?: () => void;
   onNotifications?: () => void;
 }
@@ -85,147 +103,289 @@ class MapErrorBoundary extends Component<
 }
 
 // ─── Leaflet Map (Android / native) ──────────────────────────────────────────
-// Uses OpenStreetMap tiles — no API key, no referrer restrictions.
-// Leaflet CSS is imported statically above (mandatory for correct tile rendering).
-function LeafletMap({ userLocation, rides }: {
+function LeafletMap({
+  userLocation,
+  rides,
+  onOpenRide,
+}: {
   userLocation: UserLocation | null;
   rides: { ride: RidePost; distKm: number | null }[];
+  onOpenRide?: (ride: RidePost) => void;
 }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<import("leaflet").Map | null>(null);
+  // Cache: rideId → polyline layer (to avoid duplicate OSRM calls)
+  // Using Record to avoid naming conflict with Google Maps 'Map' component
+  const routeCacheRef = useRef<Record<string, import("leaflet").Polyline | null>>({});
+
   const center: [number, number] = userLocation
     ? [userLocation.lat, userLocation.lng]
     : [17.385, 78.4867];
 
-  const [MapComponents, setMapComponents] = useState<{
-    MapContainer: typeof import("react-leaflet")["MapContainer"];
-    TileLayer: typeof import("react-leaflet")["TileLayer"];
-    Marker: typeof import("react-leaflet")["Marker"];
-    useMap: typeof import("react-leaflet")["useMap"];
-    L: typeof import("leaflet");
-  } | null>(null);
-
-  // Load react-leaflet + leaflet once on mount
   useEffect(() => {
-    Promise.all([import("react-leaflet"), import("leaflet")])
-      .then(([rl, L]) => {
-        // Fix default marker icons (Leaflet + Vite/webpack bundler issue)
-        (L.default.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl = undefined;
-        L.default.Icon.Default.mergeOptions({
-          iconRetinaUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png",
-          iconUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png",
-          shadowUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
+    let isMounted = true;
+
+    (async () => {
+      const L = (await import("leaflet")).default;
+
+      if (!containerRef.current || !isMounted) return;
+
+      // Fix default marker icons
+      (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl = undefined;
+      L.Icon.Default.mergeOptions({
+        iconRetinaUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png",
+        iconUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png",
+        shadowUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
+      });
+
+      const leafletMap = L.map(containerRef.current, {
+        center,
+        zoom: 13,
+        zoomControl: false,
+        attributionControl: false,
+      });
+      mapRef.current = leafletMap;
+
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: "",
+      }).addTo(leafletMap);
+
+      setTimeout(() => leafletMap.invalidateSize(), 150);
+
+      const makeIcon = (color: string, size = 14) =>
+        L.divIcon({
+          className: "",
+          html: `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${color};border:2.5px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.3)"></div>`,
+          iconSize: [size, size],
+          iconAnchor: [size / 2, size / 2],
         });
-        setMapComponents({
-          MapContainer: rl.MapContainer,
-          TileLayer: rl.TileLayer,
-          Marker: rl.Marker,
-          useMap: rl.useMap,
-          L: L.default,
-        });
-      })
-      .catch(console.error);
+
+      // User location marker
+      if (userLocation) {
+        L.marker([userLocation.lat, userLocation.lng], {
+          icon: L.divIcon({
+            className: "",
+            html: `<div style="width:18px;height:18px;border-radius:50%;background:#2E5BFF;border:3px solid white;box-shadow:0 0 0 6px rgba(46,91,255,0.28),0 2px 8px rgba(0,0,0,0.3)"></div>`,
+            iconSize: [18, 18],
+            iconAnchor: [9, 9],
+          }),
+        }).addTo(leafletMap);
+      }
+
+      // Map routes (only rides within MAP_RADIUS_KM)
+      const mapRides = rides.filter((r) => r.distKm === null || r.distKm <= MAP_RADIUS_KM);
+
+      for (let i = 0; i < mapRides.length; i++) {
+        if (!isMounted) break;
+        const { ride } = mapRides[i];
+        if (!ride.fromCoords) continue;
+
+        const color = getRouteColor(i);
+
+        // Start marker
+        const startMarker = L.marker([ride.fromCoords.lat, ride.fromCoords.lng], {
+          icon: makeIcon(color, 14),
+        }).addTo(leafletMap);
+        startMarker.on("click", () => onOpenRide?.(ride));
+
+        // Skip if already have a cached route polyline for this ride
+        if (routeCacheRef.current[ride.rideId]) {
+          const cachedPoly = routeCacheRef.current[ride.rideId]!;
+          cachedPoly.addTo(leafletMap);
+          cachedPoly.on("click", () => onOpenRide?.(ride));
+          continue;
+        }
+
+        // Fetch OSRM route
+        try {
+          const geocodeRes = await fetch(
+            `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(ride.to + ", India")}&format=json&limit=1`,
+            { headers: { "User-Agent": "DostWheels/1.0", "Accept-Language": "en" } }
+          );
+          const geocodeData = await geocodeRes.json() as Array<{ lat: string; lon: string }>;
+
+          if (geocodeData.length > 0 && isMounted) {
+            const destLat = parseFloat(geocodeData[0].lat);
+            const destLng = parseFloat(geocodeData[0].lon);
+
+            // Destination marker
+            const destMarker = L.marker([destLat, destLng], {
+              icon: makeIcon("#ef4444", 12),
+            }).addTo(leafletMap);
+            destMarker.on("click", () => onOpenRide?.(ride));
+
+            const osrmUrl =
+              `https://router.project-osrm.org/route/v1/driving/` +
+              `${ride.fromCoords!.lng},${ride.fromCoords!.lat};${destLng},${destLat}` +
+              `?overview=full&geometries=geojson`;
+
+            const routeRes = await fetch(osrmUrl);
+            const routeData = await routeRes.json() as {
+              routes?: Array<{ geometry: { coordinates: [number, number][] } }>;
+            };
+
+            if (routeData.routes?.[0] && isMounted) {
+              const latlngs: [number, number][] = routeData.routes[0].geometry.coordinates.map(
+                ([lng, lat]) => [lat, lng]
+              );
+
+              const poly = L.polyline(latlngs, {
+                color,
+                weight: 4,
+                opacity: 0.8,
+                className: `ride-route-${ride.rideId}`,
+              }).addTo(leafletMap);
+
+              poly.on("click", () => onOpenRide?.(ride));
+              routeCacheRef.current[ride.rideId] = poly;
+            }
+          }
+        } catch (err) {
+          console.warn("[LeafletMap] OSRM fetch failed for ride", ride.rideId, err);
+        }
+
+        // Small delay between OSRM calls to avoid rate limiting
+        await new Promise((r) => setTimeout(r, 120));
+      }
+
+      // Fallback markers for rides not within MAP_RADIUS_KM (show pickup pin only)
+      const farRides = rides.filter((r) => r.distKm !== null && r.distKm > MAP_RADIUS_KM);
+      for (const { ride } of farRides) {
+        if (!ride.fromCoords || !isMounted) continue;
+        L.marker([ride.fromCoords.lat, ride.fromCoords.lng], {
+          icon: makeIcon("#FFB020", 12),
+        }).addTo(leafletMap).on("click", () => onOpenRide?.(ride));
+      }
+    })();
+
+    return () => {
+      isMounted = false;
+      // Remove all cached polylines from DOM (they hold map references)
+      Object.values(routeCacheRef.current).forEach((poly) => poly?.remove());
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (!MapComponents) {
-    return (
-      <div style={{ width: "100%", height: "100%", display: "flex",
-        alignItems: "center", justifyContent: "center", background: "var(--card)" }}>
-        <Loader2 size={24} className="animate-spin" style={{ color: "#2E5BFF" }} />
-      </div>
-    );
-  }
+  // Pan map when userLocation changes (after initial mount)
+  useEffect(() => {
+    if (mapRef.current && userLocation) {
+      mapRef.current.panTo([userLocation.lat, userLocation.lng]);
+    }
+  }, [userLocation]);
 
-  const { MapContainer, TileLayer, Marker, useMap: useLeafletMap, L } = MapComponents;
-
-  // MapSizer: calls invalidateSize() after mount to fix tile layout
-  // on Android where the container dimensions may not be known at init time.
-  function MapSizer() {
-    const map = useLeafletMap();
-    useEffect(() => {
-      if (!map) return;
-      // Brief delay ensures the container has final dimensions before resize
-      const t = setTimeout(() => { map.invalidateSize(); }, 150);
-      return () => clearTimeout(t);
-    }, [map]);
-    return null;
-  }
-
-  const userIcon = L.divIcon({
-    className: "",
-    html: `<div style="width:18px;height:18px;border-radius:50%;background:#2E5BFF;border:3px solid white;box-shadow:0 0 0 6px rgba(46,91,255,0.28),0 2px 8px rgba(0,0,0,0.3)"></div>`,
-    iconSize: [18, 18],
-    iconAnchor: [9, 9],
-  });
-
-  const rideIcon = L.divIcon({
-    className: "",
-    html: `<div style="width:16px;height:16px;border-radius:50%;background:#FFB020;border:2.5px solid #d97706;box-shadow:0 2px 6px rgba(0,0,0,0.3)"></div>`,
-    iconSize: [16, 16],
-    iconAnchor: [8, 8],
-  });
-
-  return (
-    <MapContainer
-      center={center}
-      zoom={13}
-      // width/height fills the 280px parent container.
-      // zIndex:0 forces leaflet-container to create its own CSS stacking context
-      // (position:relative + integer z-index = new stacking context).
-      // Without this, Leaflet's internal panes (tile-pane z-200, overlay-pane z-400…)
-      // bleed into the parent stacking order and render ON TOP of the greeting/
-      // notification divs that have z-10 (z-index:10). With zIndex:0 here, all
-      // internal Leaflet z-indices stay inside the map's stacking context, and
-      // the parent's z-10 elements (greeting, bell, search bar) appear above the map.
-      style={{ width: "100%", height: "100%", zIndex: 0 }}
-      zoomControl={false}
-      attributionControl={false}
-    >
-      <MapSizer />
-      <TileLayer
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-        attribution=""
-      />
-      {rides.map(({ ride }) =>
-        ride.fromCoords ? (
-          <Marker
-            key={`pin-${ride.rideId}`}
-            position={[ride.fromCoords.lat, ride.fromCoords.lng]}
-            icon={rideIcon}
-          />
-        ) : null
-      )}
-      {userLocation && (
-        <Marker position={[userLocation.lat, userLocation.lng]} icon={userIcon} />
-      )}
-    </MapContainer>
-  );
+  return <div ref={containerRef} style={{ width: "100%", height: "100%", zIndex: 0 }} />;
 }
 
 
-// ─── Google Maps (Web) ───────────────────────────────────────────────────────
-function RoutePolyline({ fromCoords, toAddress }: { fromCoords: { lat: number; lng: number }; toAddress: string }) {
+// ─── Google Maps — per-ride coloured route polyline ───────────────────────────
+interface HomeRoutePolylineProps {
+  ride: RidePost;
+  color: string;
+  highlighted: boolean;
+  onClick: () => void;
+}
+
+function HomeRoutePolyline({ ride, color, highlighted, onClick }: HomeRoutePolylineProps) {
   const map = useMap();
   const routesLib = useMapsLibrary("routes");
   const rendererRef = useRef<google.maps.DirectionsRenderer | null>(null);
+  const clickListenerRef = useRef<google.maps.MapsEventListener | null>(null);
 
   useEffect(() => {
-    if (!map || !routesLib) return;
+    if (!map || !routesLib || !ride.fromCoords) return;
+
+    const strokeWeight = highlighted ? 7 : 4;
+    const strokeOpacity = highlighted ? 1.0 : 0.72;
+
     if (!rendererRef.current) {
       rendererRef.current = new routesLib.DirectionsRenderer({
-        suppressMarkers: true, preserveViewport: true,
-        polylineOptions: { strokeColor: "#2E5BFF", strokeOpacity: 0.72, strokeWeight: 4 },
+        suppressMarkers: true,
+        preserveViewport: true,
+        polylineOptions: {
+          strokeColor: color,
+          strokeOpacity,
+          strokeWeight,
+          zIndex: highlighted ? 5 : 2,
+        },
+      });
+    } else {
+      // Update polyline style in place
+      rendererRef.current.setOptions({
+        polylineOptions: {
+          strokeColor: color,
+          strokeOpacity,
+          strokeWeight,
+          zIndex: highlighted ? 5 : 2,
+        },
       });
     }
+
     rendererRef.current.setMap(map);
-    new routesLib.DirectionsService().route(
-      { origin: fromCoords, destination: `${toAddress}, Hyderabad, Telangana, India`, travelMode: routesLib.TravelMode.TWO_WHEELER },
-      (result, status) => { if (status === "OK" && result && rendererRef.current) rendererRef.current.setDirections(result); }
-    );
-    return () => { rendererRef.current?.setMap(null); };
+
+    // Attach click listener to the underlying polyline
+    const attachClick = () => {
+      const overview = rendererRef.current?.getDirections()?.routes?.[0]?.overview_path;
+      if (!overview) return;
+      // The DirectionsRenderer draws an internal polyline; we catch clicks via map click + proximity check
+    };
+    attachClick();
+
+    // Only fetch route if not already set
+    if (!rendererRef.current.getDirections()) {
+      new routesLib.DirectionsService().route(
+        {
+          origin: { lat: ride.fromCoords!.lat, lng: ride.fromCoords!.lng },
+          destination: `${ride.to}, India`,
+          travelMode: routesLib.TravelMode.TWO_WHEELER,
+        },
+        (result, status) => {
+          if (status === "OK" && result && rendererRef.current) {
+            rendererRef.current.setDirections(result);
+          }
+        }
+      );
+    }
+
+    return () => {
+      rendererRef.current?.setMap(null);
+      clickListenerRef.current?.remove();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [map, routesLib, fromCoords.lat, fromCoords.lng, toAddress]);
-  return null;
+  }, [map, routesLib, ride.rideId, highlighted, color]);
+
+  // Invisible clickable overlay marker at pickup point for tap interaction
+  return ride.fromCoords ? (
+    <>
+      {/* Start marker */}
+      <AdvancedMarker
+        key={`start-${ride.rideId}`}
+        position={{ lat: ride.fromCoords.lat, lng: ride.fromCoords.lng }}
+        title={`${ride.posterName}: ${ride.from}`}
+        onClick={onClick}
+      >
+        <div
+          style={{
+            width: highlighted ? 16 : 12,
+            height: highlighted ? 16 : 12,
+            borderRadius: "50%",
+            background: "#22c55e",
+            border: `2.5px solid white`,
+            boxShadow: highlighted
+              ? `0 0 0 4px ${color}44, 0 2px 8px rgba(0,0,0,0.3)`
+              : "0 2px 6px rgba(0,0,0,0.25)",
+            transition: "all 0.2s ease",
+          }}
+        />
+      </AdvancedMarker>
+    </>
+  ) : null;
 }
 
+// ─── Google Maps (Web) ───────────────────────────────────────────────────────
 function MapCenterer({ userLocation }: { userLocation: UserLocation | null }) {
   const map = useMap();
   useEffect(() => {
@@ -234,32 +394,89 @@ function MapCenterer({ userLocation }: { userLocation: UserLocation | null }) {
   return null;
 }
 
-function GoogleMapInner({ userLocation, rides }: {
+function GoogleMapInner({
+  userLocation,
+  rides,
+  onOpenRide,
+}: {
   userLocation: UserLocation | null;
   rides: { ride: RidePost; distKm: number | null }[];
+  onOpenRide?: (ride: RidePost) => void;
 }) {
+  const [highlightedRideId, setHighlightedRideId] = useState<string | null>(null);
+
   const defaultCenter = userLocation
     ? { lat: userLocation.lat, lng: userLocation.lng }
     : { lat: 17.385, lng: 78.4867 };
+
+  // Rides within MAP_RADIUS_KM get full route polylines
+  const mapRides = rides.filter((r) => r.distKm === null || r.distKm <= MAP_RADIUS_KM);
+  // Rides outside MAP_RADIUS_KM get just a pickup pin
+  const farRides = rides.filter((r) => r.distKm !== null && r.distKm > MAP_RADIUS_KM);
+
+  const handleRideClick = useCallback((ride: RidePost) => {
+    setHighlightedRideId(ride.rideId);
+    setTimeout(() => onOpenRide?.(ride), 180); // brief highlight then open
+  }, [onOpenRide]);
+
   return (
-    <Map mapId="bikepooling-home-map" defaultCenter={defaultCenter} defaultZoom={13}
-      gestureHandling="greedy" disableDefaultUI={true}
-      style={{ width: "100%", height: "100%" }} colorScheme="FOLLOW_SYSTEM">
+    <Map
+      mapId="bikepooling-home-map"
+      defaultCenter={defaultCenter}
+      defaultZoom={13}
+      gestureHandling="greedy"
+      disableDefaultUI={true}
+      style={{ width: "100%", height: "100%" }}
+      colorScheme="FOLLOW_SYSTEM"
+    >
       <MapCenterer userLocation={userLocation} />
-      {rides.map(({ ride }) => ride.fromCoords ? (
-        <RoutePolyline key={`route-${ride.rideId}`} fromCoords={ride.fromCoords} toAddress={ride.to} />
-      ) : null)}
-      {rides.map(({ ride }) => ride.fromCoords ? (
-        <AdvancedMarker key={`pin-${ride.rideId}`}
-          position={{ lat: ride.fromCoords.lat, lng: ride.fromCoords.lng }}
-          title={`${ride.posterName}: ${ride.from} → ${ride.to}`}>
-          <Pin background="#FFB020" borderColor="#d97706" glyphColor="#fff" scale={0.9} />
-        </AdvancedMarker>
-      ) : null)}
+
+      {/* Route polylines + start markers for nearby rides */}
+      {mapRides.map(({ ride }, i) => (
+        <HomeRoutePolyline
+          key={`route-${ride.rideId}`}
+          ride={ride}
+          color={getRouteColor(i)}
+          highlighted={highlightedRideId === ride.rideId}
+          onClick={() => handleRideClick(ride)}
+        />
+      ))}
+
+      {/* Destination markers for nearby rides */}
+      {mapRides.map(({ ride }) =>
+        ride.fromCoords ? (
+          <AdvancedMarker
+            key={`dest-pin-${ride.rideId}`}
+            position={{ lat: ride.fromCoords.lat, lng: ride.fromCoords.lng }}
+            title={`Destination: ${ride.to}`}
+            onClick={() => handleRideClick(ride)}
+          >
+            <Pin background="#FFB020" borderColor="#d97706" glyphColor="#fff" scale={0.8} />
+          </AdvancedMarker>
+        ) : null
+      )}
+
+      {/* Simple pickup pins for far rides */}
+      {farRides.map(({ ride }) =>
+        ride.fromCoords ? (
+          <AdvancedMarker
+            key={`far-pin-${ride.rideId}`}
+            position={{ lat: ride.fromCoords.lat, lng: ride.fromCoords.lng }}
+            title={`${ride.posterName}: ${ride.from} → ${ride.to}`}
+            onClick={() => handleRideClick(ride)}
+          >
+            <Pin background="#FFB020" borderColor="#d97706" glyphColor="#fff" scale={0.75} />
+          </AdvancedMarker>
+        ) : null
+      )}
+
+      {/* User location */}
       {userLocation && (
-        <AdvancedMarker position={{ lat: userLocation.lat, lng: userLocation.lng }}>
-          <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#2E5BFF",
-            border: "3px solid white", boxShadow: "0 0 0 6px rgba(46,91,255,0.28), 0 2px 8px rgba(0,0,0,0.3)" }} />
+        <AdvancedMarker position={{ lat: userLocation.lat, lng: userLocation.lng }} zIndex={20}>
+          <div style={{
+            width: 18, height: 18, borderRadius: "50%", background: "#2E5BFF",
+            border: "3px solid white", boxShadow: "0 0 0 6px rgba(46,91,255,0.28), 0 2px 8px rgba(0,0,0,0.3)",
+          }} />
         </AdvancedMarker>
       )}
     </Map>
@@ -268,31 +485,45 @@ function GoogleMapInner({ userLocation, rides }: {
 
 // ─── Platform-aware Map Router ────────────────────────────────────────────────
 function HomeMap({
-  userLocation, rides,
+  userLocation,
+  rides,
+  onOpenRide,
 }: {
   userLocation: UserLocation | null;
   rides: { ride: RidePost; distKm: number | null }[];
+  onOpenRide?: (ride: RidePost) => void;
 }) {
   if (IS_NATIVE) {
     return (
       <MapErrorBoundary>
-        <LeafletMap userLocation={userLocation} rides={rides} />
+        <LeafletMap userLocation={userLocation} rides={rides} onOpenRide={onOpenRide} />
       </MapErrorBoundary>
     );
   }
   return (
     <MapErrorBoundary>
       <APIProvider apiKey={GOOGLE_MAPS_KEY} libraries={["places", "routes"]}>
-        <GoogleMapInner userLocation={userLocation} rides={rides} />
+        <GoogleMapInner userLocation={userLocation} rides={rides} onOpenRide={onOpenRide} />
       </APIProvider>
     </MapErrorBoundary>
   );
 }
 
 // ─── Ride Card ────────────────────────────────────────────────────────────────
-function RideCard({ ride, distanceKm, userId, userName, onToast }: {
-  ride: RidePost; distanceKm: number | null; userId: string; userName: string;
+function RideCard({
+  ride,
+  distanceKm,
+  userId,
+  userName,
+  onToast,
+  onOpenRide,
+}: {
+  ride: RidePost;
+  distanceKm: number | null;
+  userId: string;
+  userName: string;
   onToast: (msg: string, type?: "success" | "error" | "info") => void;
+  onOpenRide?: (ride: RidePost) => void;
 }) {
   const initials = ride.posterName.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
   const color = getAvatarColor(ride.posterName);
@@ -301,7 +532,8 @@ function RideCard({ ride, distanceKm, userId, userName, onToast }: {
   const alreadyJoined = ride.joinedByIds?.includes(userId);
   const alreadyRequested = ride.pendingRequestIds?.includes(userId) || reqState === "sent";
 
-  const handleRequest = async () => {
+  const handleRequest = async (e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent card tap from opening detail
     if (alreadyJoined || alreadyRequested || reqState === "loading") return;
     setReqState("loading");
     const result = await sendJoinRequest(ride.rideId, userId, userName);
@@ -310,9 +542,17 @@ function RideCard({ ride, distanceKm, userId, userName, onToast }: {
   };
 
   return (
-    <div className="rounded-2xl border p-3.5 flex items-center gap-3 transition-all active:scale-[0.99]"
-      style={{ background: "var(--card)", borderColor: live ? "rgba(34,197,94,0.35)" : "var(--border)",
-        boxShadow: live ? "0 2px 14px rgba(34,197,94,0.1)" : "0 1px 6px rgba(20,18,43,0.04)" }}>
+    <div
+      className="rounded-2xl border p-3.5 flex items-center gap-3 transition-all active:scale-[0.99] cursor-pointer"
+      style={{
+        background: "var(--card)",
+        borderColor: live ? "rgba(34,197,94,0.35)" : "var(--border)",
+        boxShadow: live ? "0 2px 14px rgba(34,197,94,0.1)" : "0 1px 6px rgba(20,18,43,0.04)",
+      }}
+      onClick={() => onOpenRide?.(ride)}
+      role="button"
+      aria-label={`View ride from ${ride.from} to ${ride.to}`}
+    >
       <div className="relative shrink-0">
         <div className="w-11 h-11 rounded-full flex items-center justify-center text-white font-bold text-[15px]"
           style={{ background: color, fontFamily: "'Space Grotesk', sans-serif" }}>{initials}</div>
@@ -354,13 +594,24 @@ function RideCard({ ride, distanceKm, userId, userName, onToast }: {
         </div>
       </div>
       <div className="shrink-0">
-        <button onClick={handleRequest} disabled={alreadyJoined || alreadyRequested || reqState === "loading"}
+        <button
+          onClick={handleRequest}
+          disabled={alreadyJoined || alreadyRequested || reqState === "loading"}
           className="text-[11.5px] font-semibold px-3.5 py-2 rounded-xl text-white transition-all disabled:opacity-70 flex items-center justify-center gap-1"
           style={{
-            background: alreadyJoined ? "linear-gradient(135deg,#16a34a,#22c55e)" : alreadyRequested ? "linear-gradient(135deg,#f59e0b,#fbbf24)" : "linear-gradient(135deg,#2E5BFF,#6b8fff)",
+            background: alreadyJoined
+              ? "linear-gradient(135deg,#16a34a,#22c55e)"
+              : alreadyRequested
+              ? "linear-gradient(135deg,#f59e0b,#fbbf24)"
+              : "linear-gradient(135deg,#2E5BFF,#6b8fff)",
             minWidth: 68,
-            boxShadow: alreadyJoined ? "0 3px 10px rgba(22,163,74,0.3)" : alreadyRequested ? "0 3px 10px rgba(245,158,11,0.3)" : "0 3px 10px rgba(46,91,255,0.35)",
-          }}>
+            boxShadow: alreadyJoined
+              ? "0 3px 10px rgba(22,163,74,0.3)"
+              : alreadyRequested
+              ? "0 3px 10px rgba(245,158,11,0.3)"
+              : "0 3px 10px rgba(46,91,255,0.35)",
+          }}
+        >
           {reqState === "loading" ? <Loader2 size={12} className="animate-spin" />
             : alreadyJoined ? <><CheckCircle2 size={11} /> Joined</>
             : alreadyRequested ? <><Send size={11} /> Sent</>
@@ -453,7 +704,16 @@ function SearchDrawer({ open, onClose, onApply, allRides }: {
 }
 
 // ─── Main HomeScreen ──────────────────────────────────────────────────────────
-export function HomeScreen({ user, onRequestRide, userLocation, onGoProfile, onNotifications }: HomeScreenProps) {
+export function HomeScreen({
+  user,
+  onRequestRide,
+  onOpenRide,
+  userLocation,
+  locationDenied,
+  onRequestLocation,
+  onGoProfile,
+  onNotifications,
+}: HomeScreenProps) {
   const firstName = user.name.split(" ")[0];
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
@@ -551,7 +811,7 @@ export function HomeScreen({ user, onRequestRide, userLocation, onGoProfile, onN
             this isolated stacking context. All overlay divs below use
             position:absolute with a z-index > 0 to stay on top. */}
         <div style={{ position: "absolute", inset: 0, zIndex: 0 }}>
-          <HomeMap userLocation={userLocation ?? null} rides={displayRides} />
+          <HomeMap userLocation={userLocation ?? null} rides={displayRides} onOpenRide={onOpenRide} />
         </div>
         <div className="absolute inset-x-0 bottom-0 h-20 pointer-events-none"
           style={{ background: "linear-gradient(to top, var(--background-solid) 0%, transparent 100%)", zIndex: 1 }} />
@@ -577,15 +837,52 @@ export function HomeScreen({ user, onRequestRide, userLocation, onGoProfile, onN
 
         {/* Location tag */}
         <div className="absolute" style={{ top: 76, left: 16, zIndex: 10 }}>
-          <div className="flex items-center gap-1 text-[11px] font-medium px-2.5 py-1 rounded-full"
-            style={{ background: "rgba(20,18,43,0.65)", backdropFilter: "blur(10px)", color: "rgba(255,255,255,0.8)" }}>
-            <MapPin size={11} style={{ color: "#FFB020" }} />
-            {userLocation ? userLocation.fullLabel : "Detecting location…"}
-            <ChevronRight size={11} style={{ opacity: 0.5 }} />
-          </div>
+          {userLocation ? (
+            <div className="flex items-center gap-1 text-[11px] font-medium px-2.5 py-1 rounded-full"
+              style={{ background: "rgba(20,18,43,0.65)", backdropFilter: "blur(10px)", color: "rgba(255,255,255,0.8)" }}>
+              <MapPin size={11} style={{ color: "#FFB020" }} />
+              {userLocation.fullLabel}
+              <ChevronRight size={11} style={{ opacity: 0.5 }} />
+            </div>
+          ) : (
+            <button
+              onClick={onRequestLocation}
+              className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-full transition-all active:scale-95"
+              style={{
+                background: locationDenied
+                  ? "rgba(239,68,68,0.85)"
+                  : "rgba(46,91,255,0.85)",
+                backdropFilter: "blur(10px)",
+                color: "white",
+                border: locationDenied
+                  ? "1px solid rgba(239,68,68,0.5)"
+                  : "1px solid rgba(46,91,255,0.4)",
+                boxShadow: locationDenied
+                  ? "0 2px 12px rgba(239,68,68,0.35)"
+                  : "0 2px 12px rgba(46,91,255,0.35)",
+              }}
+            >
+              <span
+                style={{
+                  width: 7, height: 7, borderRadius: "50%",
+                  background: locationDenied ? "#fca5a5" : "#93c5fd",
+                  animation: locationDenied ? "none" : "locPulse 1.4s ease-in-out infinite",
+                  display: "inline-block", flexShrink: 0,
+                }}
+              />
+              <MapPin size={11} />
+              {locationDenied ? "Location Denied — Tap to retry" : "Enable Location Services"}
+            </button>
+          )}
         </div>
+        <style>{`
+          @keyframes locPulse {
+            0%,100% { opacity:1; transform:scale(1); }
+            50% { opacity:0.4; transform:scale(1.4); }
+          }
+        `}</style>
 
-        {/* Rider count badge — green dot = live, no redundant 'Live' text */}
+        {/* Rider count badge */}
         <div className="absolute top-4 left-1/2 -translate-x-1/2" style={{ zIndex: 10 }}>
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full"
             style={{ background: "rgba(0,0,0,0.52)", backdropFilter: "blur(10px)" }}>
@@ -596,7 +893,7 @@ export function HomeScreen({ user, onRequestRide, userLocation, onGoProfile, onN
           </div>
         </div>
 
-        {/* Floating Search Bar — Google Places autocomplete */}
+        {/* Floating Search Bar */}
         <div className="absolute bottom-5 left-4 right-4" style={{ zIndex: 10 }}>
           <div className="flex items-center gap-2 rounded-2xl px-4 py-3"
             style={{ background: "var(--card)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", boxShadow: "0 8px 32px rgba(20,18,43,0.18)", border: "1px solid var(--glass-border)" }}>
@@ -714,7 +1011,15 @@ export function HomeScreen({ user, onRequestRide, userLocation, onGoProfile, onN
         ) : (
           <div className="space-y-3">
             {displayRides.map(({ ride, distKm }) => (
-              <RideCard key={ride.rideId} ride={ride} distanceKm={distKm} userId={user.id} userName={user.name} onToast={showToast} />
+              <RideCard
+                key={ride.rideId}
+                ride={ride}
+                distanceKm={distKm}
+                userId={user.id}
+                userName={user.name}
+                onToast={showToast}
+                onOpenRide={onOpenRide}
+              />
             ))}
             {displayRides.length >= 10 && (
               <button className="w-full py-3 rounded-2xl flex items-center justify-center gap-1.5 font-medium text-[13px]"

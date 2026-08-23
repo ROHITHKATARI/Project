@@ -188,7 +188,7 @@ export async function exchangeNativeOAuthCode(
 
   // Decode the ID token payload (base64url → JSON, no signature verification needed here)
   const payload = decodeJwtPayload(tokens.id_token);
-  const userId: string = payload.sub ?? "";
+  const userId: string = (payload.sub as string) ?? "";
   const email: string = (payload.email as string) ?? "";
   const name: string =
     (payload.name as string) ||

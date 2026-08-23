@@ -114,10 +114,12 @@ function getWebLocation(): Promise<{ lat: number; lng: number } | null> {
 }
 
 // ─── Main: request GPS + reverse geocode ─────────────────────────────
-export async function requestUserLocation(): Promise<UserLocation | null> {
-  // Return cached result if fresh enough
-  const cached = getCachedLocation();
-  if (cached) return cached;
+export async function requestUserLocation(forceRefresh = false): Promise<UserLocation | null> {
+  // Return cached result if fresh enough (unless forced)
+  if (!forceRefresh) {
+    const cached = getCachedLocation();
+    if (cached) return cached;
+  }
 
   // Use the correct GPS API for the platform
   const coords = Capacitor.isNativePlatform()

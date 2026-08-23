@@ -71,9 +71,20 @@ function ProfileAvatar({
 
   return (
     <div className="flex items-center gap-4">
-      <div className="relative shrink-0" onClick={() => fileRef.current?.click()}>
-        <div className="w-[84px] h-[84px] rounded-full overflow-hidden flex items-center justify-center cursor-pointer shadow-sm border"
-          style={{ background: localUrl ? "transparent" : color, borderColor: "var(--border)" }}>
+      <div className="relative shrink-0 w-[84px] h-[84px]">
+        {/* Invisible file input overlay for direct mobile tap support */}
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          aria-label="Upload profile picture"
+          onChange={handleFile}
+          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
+        />
+        <div
+          className="w-[84px] h-[84px] rounded-full overflow-hidden flex items-center justify-center cursor-pointer shadow-sm border relative z-0"
+          style={{ background: localUrl ? "transparent" : color, borderColor: "var(--border)" }}
+        >
           {localUrl ? (
             <img src={localUrl} alt={user.name} className="w-full h-full object-cover" />
           ) : (
@@ -82,21 +93,22 @@ function ProfileAvatar({
             </span>
           )}
           {uploading && (
-            <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40">
+            <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 z-10">
               <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
             </div>
           )}
         </div>
         {/* Verification Checkmark or Camera icon */}
-        <div className="absolute bottom-0 right-0 w-6 h-6 rounded-full flex items-center justify-center shadow-md border-2"
-             style={{ borderColor: "var(--background-solid)", backgroundColor: "var(--primary)" }}>
+        <div
+          className="absolute bottom-0 right-0 w-6 h-6 rounded-full flex items-center justify-center shadow-md border-2 z-10 pointer-events-none"
+          style={{ borderColor: "var(--background-solid)", backgroundColor: "var(--primary)" }}
+        >
           {isVerified ? (
             <CheckCircle2 size={12} color="#fff" />
           ) : (
             <Camera size={12} color="#fff" />
           )}
         </div>
-        <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleFile} />
       </div>
 
       <div className="flex-1 min-w-0">

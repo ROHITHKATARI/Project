@@ -86,6 +86,8 @@ function AppShell({
   isDark,
   toggleTheme,
   userLocation,
+  locationDenied,
+  onRequestLocation,
   onNavigateBack,
 }: {
   user: User;
@@ -94,6 +96,8 @@ function AppShell({
   isDark: boolean;
   toggleTheme: () => void;
   userLocation: UserLocation | null;
+  locationDenied?: boolean;
+  onRequestLocation?: () => void;
   onNavigateBack?: () => void;
 }) {
   const [screen, setScreen] = useState<Screen>("home");
@@ -156,7 +160,10 @@ function AppShell({
           <HomeScreen
             user={user}
             onRequestRide={handleRequestRide}
+            onOpenRide={(ride) => setSelectedRide(ride)}
             userLocation={userLocation}
+            locationDenied={locationDenied}
+            onRequestLocation={onRequestLocation}
             onGoProfile={() => setScreen("profile")}
             onNotifications={() => setScreen("notifications")}
           />
@@ -243,6 +250,7 @@ function AppShell({
           ride={selectedRide}
           currentUserId={user.id}
           currentUserName={user.name}
+          userLocation={userLocation}
           onClose={() => setSelectedRide(null)}
         />
       )}
@@ -277,6 +285,7 @@ export default function App() {
   const [googleLoading, setGoogleLoading] = useState(false);
   const [oauthError, setOauthError] = useState<string | null>(null);
   const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
+  const [locationDenied, setLocationDenied] = useState(false);
   // A lightweight repaint flag — does NOT remount AppShell (which would crash async ops)
   const [, forceRepaint] = useState(0);
   const appShellGoBackRef = React.useRef<(() => void) | null>(null);
@@ -583,8 +592,27 @@ export default function App() {
   const handleAuth = (u: User) => {
     setUser(u);
     setShowLoading(true);
-    requestUserLocation().then((loc) => { if (loc) setUserLocation(loc); });
+    requestUserLocation().then((loc) => {
+      if (loc) {
+        setUserLocation(loc);
+        setLocationDenied(false);
+      } else {
+        setLocationDenied(true);
+      }
+    });
   };
+
+  // Re-request location permission (called from the "Enable Location Services" button)
+  const handleRequestLocation = useCallback(async () => {
+    setLocationDenied(false);
+    const loc = await requestUserLocation(true);
+    if (loc) {
+      setUserLocation(loc);
+      setLocationDenied(false);
+    } else {
+      setLocationDenied(true);
+    }
+  }, []);
 
   const handleLogout = async () => {
     await logoutUser();
@@ -638,6 +666,8 @@ export default function App() {
           isDark={isDark}
           toggleTheme={toggleTheme}
           userLocation={userLocation}
+          locationDenied={locationDenied}
+          onRequestLocation={handleRequestLocation}
         />
         <LoadingScreen username={user.name} onFinished={() => setShowLoading(false)} />
       </>
@@ -652,6 +682,8 @@ export default function App() {
       isDark={isDark}
       toggleTheme={toggleTheme}
       userLocation={userLocation}
+      locationDenied={locationDenied}
+      onRequestLocation={handleRequestLocation}
     />
   );
 }

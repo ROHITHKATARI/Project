@@ -1,19 +1,39 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback, Component } from "react";
+import React from "react";
 import {
   X, MapPin, Clock, MessageCircle, Navigation2,
   Send, Car, Bike, ChevronRight, Star, Loader2,
-  RadioTower, Briefcase, Building2, Info,
+  RadioTower, Briefcase, Building2, Info, Footprints,
+  PhoneCall, Users, DollarSign, Route,
 } from "lucide-react";
 import type { RidePost } from "../../lib/ridesDb";
+import { sendJoinRequest as sendRideJoinRequest } from "../../lib/ridesDb";
 import { sendMessage, getMessages, type ChatMessage } from "../../lib/chatDb";
 import { updateMyLocation, getRideLocations, type ParticipantLocation } from "../../lib/locationDb";
 import { getUserProfile, type UserProfile } from "../../lib/userDb";
+import type { UserLocation } from "../../lib/locationService";
+import { Capacitor } from "@capacitor/core";
+import {
+  APIProvider, Map, AdvancedMarker, Pin, useMap, useMapsLibrary,
+} from "@vis.gl/react-google-maps";
+
+const IS_NATIVE = Capacitor.isNativePlatform();
+const GOOGLE_MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_KEY as string;
+
+// ─── Palette ──────────────────────────────────────────────────────────
+const ROUTE_COLORS = {
+  start: "#22c55e",
+  end: "#ef4444",
+  user: "#3b82f6",
+  join: "#f97316",
+};
 
 // ─── Props ────────────────────────────────────────────────────────────
 interface RideDetailScreenProps {
   ride: RidePost;
   currentUserId: string;
   currentUserName: string;
+  userLocation?: UserLocation | null;
   onClose: () => void;
 }
 
@@ -55,6 +75,585 @@ function formatRideDate(dateStr: string, timeStr: string) {
 }
 
 const VEHICLE_ICONS: Record<string, string> = { Bike: "🏍️", Scooter: "🛵", Car: "🚗" };
+
+// ─── Haversine ────────────────────────────────────────────────────────
+function haversineM(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6_371_000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// ─── Nearest point on a polyline segment ─────────────────────────────
+function nearestPointOnSegment(
+  p: { lat: number; lng: number },
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number }
+): { lat: number; lng: number } {
+  const dx = b.lng - a.lng;
+  const dy = b.lat - a.lat;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return a;
+  const t = Math.max(0, Math.min(1, ((p.lng - a.lng) * dx + (p.lat - a.lat) * dy) / lenSq));
+  return { lat: a.lat + t * dy, lng: a.lng + t * dx };
+}
+
+function findNearestJoinPoint(
+  user: { lat: number; lng: number },
+  points: { lat: number; lng: number }[]
+): { point: { lat: number; lng: number }; distanceM: number } | null {
+  if (points.length < 2) return null;
+  let best: { lat: number; lng: number } | null = null;
+  let minDist = Infinity;
+  for (let i = 0; i < points.length - 1; i++) {
+    const pt = nearestPointOnSegment(user, points[i], points[i + 1]);
+    const d = haversineM(user.lat, user.lng, pt.lat, pt.lng);
+    if (d < minDist) { minDist = d; best = pt; }
+  }
+  return best ? { point: best, distanceM: minDist } : null;
+}
+
+// ─── Best Pickup Card ─────────────────────────────────────────────────
+function NearestJoinCard({ distanceM }: { distanceM: number }) {
+  const walkMinutes = Math.ceil(distanceM / 80);
+  if (distanceM < 80) {
+    return (
+      <div
+        className="rounded-2xl p-4 flex items-start gap-3"
+        style={{ background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)" }}
+      >
+        <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: "rgba(34,197,94,0.15)" }}>
+          <MapPin className="w-4 h-4" style={{ color: "#16a34a" }} />
+        </div>
+        <div>
+          <p className="font-bold text-sm" style={{ color: "#15803d" }}>You can join directly from your current location.</p>
+          <p className="text-xs mt-0.5" style={{ color: "#166534" }}>The ride passes near you — no extra walking needed.</p>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div
+      className="rounded-2xl p-4 flex items-start gap-3"
+      style={{ background: "rgba(249,115,22,0.08)", border: "1px solid rgba(249,115,22,0.25)" }}
+    >
+      <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: "rgba(249,115,22,0.15)" }}>
+        <Navigation2 className="w-4 h-4" style={{ color: "#ea580c" }} />
+      </div>
+      <div className="flex-1">
+        <p className="font-bold text-sm" style={{ color: "#9a3412" }}>Best Pickup Point</p>
+        <div className="flex items-center gap-3 mt-1.5 flex-wrap">
+          <span className="flex items-center gap-1 text-xs font-semibold" style={{ color: "#ea580c" }}>
+            <MapPin className="w-3 h-3" />
+            {distanceM >= 1000 ? `${(distanceM / 1000).toFixed(1)} km` : `${Math.round(distanceM)} m`} away
+          </span>
+          <span className="flex items-center gap-1 text-xs font-semibold" style={{ color: "#ea580c" }}>
+            <Footprints className="w-3 h-3" />
+            {walkMinutes} min walk
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Map Error Boundary ───────────────────────────────────────────────
+class MapErrorBoundary extends Component<
+  { children: React.ReactNode; fallback?: React.ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { children: React.ReactNode; fallback?: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() { return { hasError: true }; }
+  componentDidCatch(error: Error) { console.error("[RouteMap] error:", error.message); }
+  render() {
+    if (this.state.hasError) {
+      return this.props.fallback ?? (
+        <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column",
+          alignItems: "center", justifyContent: "center", background: "var(--card)", gap: 8 }}>
+          <MapPin size={28} style={{ color: "#9297AC" }} />
+          <p style={{ color: "#9297AC", fontSize: 13 }}>Map unavailable</p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// ─── Google Maps Route Inner ──────────────────────────────────────────
+function RouteMapGoogleInner({
+  ride,
+  userLocation,
+  onJoinPointFound,
+}: {
+  ride: RidePost;
+  userLocation: UserLocation | null;
+  onJoinPointFound: (distanceM: number) => void;
+}) {
+  const map = useMap();
+  const routesLib = useMapsLibrary("routes");
+  const rendererRef = useRef<google.maps.DirectionsRenderer | null>(null);
+  const joinPolyRef = useRef<google.maps.Polyline | null>(null);
+  const [routePoints, setRoutePoints] = useState<{ lat: number; lng: number }[]>([]);
+  const [joinPoint, setJoinPoint] = useState<{ lat: number; lng: number } | null>(null);
+  const [routeLoading, setRouteLoading] = useState(true);
+  const [routeError, setRouteError] = useState(false);
+  const [destCoords, setDestCoords] = useState<{ lat: number; lng: number } | null>(null);
+
+  // Draw the route
+  useEffect(() => {
+    if (!map || !routesLib || !ride.fromCoords) return;
+
+    if (!rendererRef.current) {
+      rendererRef.current = new routesLib.DirectionsRenderer({
+        suppressMarkers: true,
+        preserveViewport: true,
+        polylineOptions: {
+          strokeColor: "#2E5BFF",
+          strokeOpacity: 0.9,
+          strokeWeight: 6,
+          zIndex: 2,
+        },
+      });
+    }
+    rendererRef.current.setMap(map);
+    setRouteLoading(true);
+    setRouteError(false);
+
+    new routesLib.DirectionsService().route(
+      {
+        origin: { lat: ride.fromCoords.lat, lng: ride.fromCoords.lng },
+        destination: `${ride.to}, India`,
+        travelMode: routesLib.TravelMode.TWO_WHEELER,
+      },
+      (result, status) => {
+        setRouteLoading(false);
+        if (status === "OK" && result && rendererRef.current) {
+          rendererRef.current.setDirections(result);
+
+          // Collect all polyline points for nearest-join algorithm
+          const pts: { lat: number; lng: number }[] = [];
+          const legs = result.routes[0]?.legs ?? [];
+          legs.forEach((leg) => {
+            leg.steps?.forEach((step) => {
+              step.path?.forEach((latLng) => {
+                pts.push({ lat: latLng.lat(), lng: latLng.lng() });
+              });
+            });
+          });
+          setRoutePoints(pts);
+
+          // Destination coords from the response
+          const endLeg = legs[legs.length - 1];
+          if (endLeg?.end_location) {
+            setDestCoords({ lat: endLeg.end_location.lat(), lng: endLeg.end_location.lng() });
+          }
+
+          // Fit bounds to show everything
+          const bounds = new google.maps.LatLngBounds();
+          if (ride.fromCoords) bounds.extend(ride.fromCoords);
+          if (endLeg?.end_location) bounds.extend(endLeg.end_location);
+          if (userLocation) bounds.extend({ lat: userLocation.lat, lng: userLocation.lng });
+          if (!bounds.isEmpty()) {
+            map.fitBounds(bounds, { top: 80, bottom: 80, left: 40, right: 40 });
+          }
+        } else {
+          setRouteError(true);
+          // Fallback: at least fit from + user
+          if (ride.fromCoords) {
+            const bounds = new google.maps.LatLngBounds();
+            bounds.extend(ride.fromCoords);
+            if (userLocation) bounds.extend({ lat: userLocation.lat, lng: userLocation.lng });
+            map.fitBounds(bounds, { top: 60, bottom: 60, left: 30, right: 30 });
+          }
+        }
+      }
+    );
+
+    return () => {
+      rendererRef.current?.setMap(null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, routesLib, ride.rideId]);
+
+  // Calculate nearest join point when route points + user location available
+  useEffect(() => {
+    if (!map || !routesLib || routePoints.length < 2 || !userLocation) return;
+
+    // Remove old join connector
+    joinPolyRef.current?.setMap(null);
+    joinPolyRef.current = null;
+
+    const result = findNearestJoinPoint(userLocation, routePoints);
+    if (!result) return;
+
+    setJoinPoint(result.point);
+    onJoinPointFound(result.distanceM);
+
+    // Draw dashed connector: user → join point
+    joinPolyRef.current = new google.maps.Polyline({
+      path: [
+        { lat: userLocation.lat, lng: userLocation.lng },
+        { lat: result.point.lat, lng: result.point.lng },
+      ],
+      geodesic: true,
+      strokeColor: ROUTE_COLORS.join,
+      strokeOpacity: 0,
+      strokeWeight: 3,
+      icons: [
+        {
+          icon: { path: "M 0,-1 0,1", strokeOpacity: 1, scale: 3 },
+          offset: "0",
+          repeat: "14px",
+        },
+      ],
+      map,
+      zIndex: 3,
+    });
+
+    return () => {
+      joinPolyRef.current?.setMap(null);
+      joinPolyRef.current = null;
+    };
+  }, [map, routesLib, routePoints, userLocation, onJoinPointFound]);
+
+  return (
+    <>
+      {/* Ride Start — green */}
+      {ride.fromCoords && (
+        <AdvancedMarker position={{ lat: ride.fromCoords.lat, lng: ride.fromCoords.lng }} zIndex={10}>
+          <Pin background={ROUTE_COLORS.start} borderColor="#15803d" glyphColor="#fff" />
+        </AdvancedMarker>
+      )}
+
+      {/* Ride Destination — red */}
+      {destCoords && (
+        <AdvancedMarker position={destCoords} zIndex={10}>
+          <Pin background={ROUTE_COLORS.end} borderColor="#b91c1c" glyphColor="#fff" />
+        </AdvancedMarker>
+      )}
+
+      {/* User location — blue */}
+      {userLocation && (
+        <AdvancedMarker position={{ lat: userLocation.lat, lng: userLocation.lng }} zIndex={12}>
+          <div style={{
+            width: 20, height: 20, borderRadius: "50%",
+            background: ROUTE_COLORS.user,
+            border: "3px solid white",
+            boxShadow: `0 0 0 6px rgba(59,130,246,0.28), 0 2px 8px rgba(0,0,0,0.3)`,
+          }} />
+        </AdvancedMarker>
+      )}
+
+      {/* Nearest join point — orange */}
+      {joinPoint && (
+        <AdvancedMarker position={joinPoint} zIndex={11}>
+          <div style={{
+            width: 18, height: 18, borderRadius: "50%",
+            background: ROUTE_COLORS.join,
+            border: "3px solid #ea580c",
+            boxShadow: "0 0 0 5px rgba(249,115,22,0.25), 0 2px 8px rgba(0,0,0,0.3)",
+          }} />
+        </AdvancedMarker>
+      )}
+
+      {/* Route error fallback */}
+      {routeError && (
+        <AdvancedMarker position={ride.fromCoords ?? { lat: 17.385, lng: 78.4867 }}>
+          <Pin background="#9297AC" borderColor="#6E7391" glyphColor="#fff" />
+        </AdvancedMarker>
+      )}
+
+      {/* Loading overlay — managed externally via routeLoading state prop */}
+      {routeLoading && (
+        <AdvancedMarker position={ride.fromCoords ?? { lat: 17.385, lng: 78.4867 }} zIndex={20}>
+          <div style={{ background: "white", borderRadius: 12, padding: "6px 10px", fontSize: 12, fontWeight: 600, color: "#2E5BFF", boxShadow: "0 2px 10px rgba(0,0,0,0.15)" }}>
+            Loading route…
+          </div>
+        </AdvancedMarker>
+      )}
+    </>
+  );
+}
+
+// ─── Google Maps Route Map ────────────────────────────────────────────
+function RouteMapGoogle({
+  ride,
+  userLocation,
+}: {
+  ride: RidePost;
+  userLocation: UserLocation | null;
+}) {
+  const [joinDistanceM, setJoinDistanceM] = useState<number | null>(null);
+  const defaultCenter = ride.fromCoords
+    ? { lat: ride.fromCoords.lat, lng: ride.fromCoords.lng }
+    : userLocation
+    ? { lat: userLocation.lat, lng: userLocation.lng }
+    : { lat: 17.385, lng: 78.4867 };
+
+  const handleJoinPoint = useCallback((d: number) => setJoinDistanceM(d), []);
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* Map */}
+      <div className="rounded-2xl overflow-hidden" style={{ height: 280, border: "1px solid var(--glass-border)" }}>
+        <APIProvider apiKey={GOOGLE_MAPS_KEY} libraries={["places", "routes"]}>
+          <Map
+            mapId="dostwheels-detail-map"
+            defaultCenter={defaultCenter}
+            defaultZoom={13}
+            gestureHandling="greedy"
+            disableDefaultUI={false}
+            zoomControl={true}
+            mapTypeControl={false}
+            streetViewControl={false}
+            fullscreenControl={false}
+            style={{ width: "100%", height: "100%" }}
+            colorScheme="FOLLOW_SYSTEM"
+          >
+            <RouteMapGoogleInner
+              ride={ride}
+              userLocation={userLocation}
+              onJoinPointFound={handleJoinPoint}
+            />
+          </Map>
+        </APIProvider>
+      </div>
+
+      {/* Legend */}
+      <div className="flex items-center gap-3 flex-wrap px-1">
+        {[
+          { color: ROUTE_COLORS.start, label: "Start" },
+          { color: ROUTE_COLORS.end, label: "Destination" },
+          ...(userLocation ? [{ color: ROUTE_COLORS.user, label: "You" }] : []),
+          ...(joinDistanceM !== null ? [{ color: ROUTE_COLORS.join, label: "Join Point" }] : []),
+        ].map(({ color, label }) => (
+          <div key={label} className="flex items-center gap-1.5">
+            <div style={{ width: 10, height: 10, borderRadius: "50%", background: color, flexShrink: 0 }} />
+            <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>{label}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Nearest join point card */}
+      {joinDistanceM !== null && <NearestJoinCard distanceM={joinDistanceM} />}
+    </div>
+  );
+}
+
+// ─── Leaflet Route Map (Android) ──────────────────────────────────────
+function RouteMapLeaflet({
+  ride,
+  userLocation,
+}: {
+  ride: RidePost;
+  userLocation: UserLocation | null;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<import("leaflet").Map | null>(null);
+  const [joinDistanceM, setJoinDistanceM] = useState<number | null>(null);
+  const [routeError, setRouteError] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    let leafletMap: import("leaflet").Map | null = null;
+    let routePolyline: import("leaflet").Polyline | null = null;
+    let joinPolyline: import("leaflet").Polyline | null = null;
+
+    (async () => {
+      const L = (await import("leaflet")).default;
+
+      if (!containerRef.current || !isMounted) return;
+
+      const center: [number, number] = ride.fromCoords
+        ? [ride.fromCoords.lat, ride.fromCoords.lng]
+        : userLocation
+        ? [userLocation.lat, userLocation.lng]
+        : [17.385, 78.4867];
+
+      leafletMap = L.map(containerRef.current, {
+        center,
+        zoom: 13,
+        zoomControl: true,
+        attributionControl: false,
+      });
+      mapRef.current = leafletMap;
+
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: "",
+      }).addTo(leafletMap);
+
+      // Invalidate size after mount
+      setTimeout(() => leafletMap?.invalidateSize(), 150);
+
+      const makeCircleIcon = (color: string, size = 14, glowColor?: string) =>
+        L.divIcon({
+          className: "",
+          html: `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${color};border:2.5px solid white;box-shadow:0 0 0 4px ${glowColor ?? color}44,0 2px 6px rgba(0,0,0,0.3)"></div>`,
+          iconSize: [size, size],
+          iconAnchor: [size / 2, size / 2],
+        });
+
+      const bounds = L.latLngBounds([]);
+
+      // Start marker
+      if (ride.fromCoords) {
+        L.marker([ride.fromCoords.lat, ride.fromCoords.lng], { icon: makeCircleIcon(ROUTE_COLORS.start, 16, ROUTE_COLORS.start) })
+          .addTo(leafletMap)
+          .bindPopup(`<b>Start:</b> ${ride.from}`);
+        bounds.extend([ride.fromCoords.lat, ride.fromCoords.lng]);
+      }
+
+      // User location marker
+      if (userLocation) {
+        L.marker([userLocation.lat, userLocation.lng], { icon: makeCircleIcon(ROUTE_COLORS.user, 18, ROUTE_COLORS.user) })
+          .addTo(leafletMap);
+        bounds.extend([userLocation.lat, userLocation.lng]);
+      }
+
+      // Fetch OSRM route
+      if (ride.fromCoords) {
+        try {
+          // First geocode the destination
+          const geocodeRes = await fetch(
+            `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(ride.to + ", India")}&format=json&limit=1`,
+            { headers: { "User-Agent": "DostWheels/1.0", "Accept-Language": "en" } }
+          );
+          const geocodeData = await geocodeRes.json() as Array<{ lat: string; lon: string }>;
+
+          if (geocodeData.length > 0 && isMounted) {
+            const destLat = parseFloat(geocodeData[0].lat);
+            const destLng = parseFloat(geocodeData[0].lon);
+            bounds.extend([destLat, destLng]);
+
+            // Destination marker
+            L.marker([destLat, destLng], { icon: makeCircleIcon(ROUTE_COLORS.end, 16, ROUTE_COLORS.end) })
+              .addTo(leafletMap!)
+              .bindPopup(`<b>Destination:</b> ${ride.to}`);
+
+            // OSRM route
+            const osrmUrl =
+              `https://router.project-osrm.org/route/v1/driving/` +
+              `${ride.fromCoords.lng},${ride.fromCoords.lat};${destLng},${destLat}` +
+              `?overview=full&geometries=geojson`;
+            const routeRes = await fetch(osrmUrl);
+            const routeData = await routeRes.json() as {
+              routes?: Array<{ geometry: { coordinates: [number, number][] } }>;
+            };
+
+            if (routeData.routes?.[0] && isMounted && leafletMap) {
+              const coords = routeData.routes[0].geometry.coordinates;
+              const latlngs: [number, number][] = coords.map(([lng, lat]) => [lat, lng]);
+
+              routePolyline = L.polyline(latlngs, {
+                color: "#2E5BFF",
+                weight: 5,
+                opacity: 0.85,
+              }).addTo(leafletMap);
+
+              // Nearest join point
+              if (userLocation) {
+                const pts = latlngs.map(([lat, lng]) => ({ lat, lng }));
+                const result = findNearestJoinPoint(userLocation, pts);
+                if (result && isMounted) {
+                  setJoinDistanceM(result.distanceM);
+
+                  // Orange join point marker
+                  L.marker([result.point.lat, result.point.lng], {
+                    icon: makeCircleIcon(ROUTE_COLORS.join, 16, ROUTE_COLORS.join),
+                  }).addTo(leafletMap!);
+
+                  // Dashed connector line
+                  joinPolyline = L.polyline(
+                    [[userLocation.lat, userLocation.lng], [result.point.lat, result.point.lng]],
+                    { color: ROUTE_COLORS.join, weight: 2, dashArray: "6,8", opacity: 0.8 }
+                  ).addTo(leafletMap!);
+                }
+              }
+            } else if (isMounted) {
+              setRouteError(true);
+            }
+          }
+        } catch (err) {
+          console.error("[RouteMapLeaflet] OSRM error:", err);
+          if (isMounted) setRouteError(true);
+        }
+      }
+
+      // Fit all markers
+      if (isMounted && leafletMap && bounds.isValid()) {
+        leafletMap.fitBounds(bounds, { padding: [40, 40] });
+      }
+    })();
+
+    return () => {
+      isMounted = false;
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ride.rideId]);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="rounded-2xl overflow-hidden" style={{ height: 280, border: "1px solid var(--glass-border)", position: "relative" }}>
+        <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+        {routeError && (
+          <div style={{
+            position: "absolute", top: 8, left: "50%", transform: "translateX(-50%)",
+            background: "rgba(239,68,68,0.9)", color: "white", borderRadius: 8,
+            padding: "4px 12px", fontSize: 12,
+          }}>
+            Could not load route
+          </div>
+        )}
+      </div>
+
+      {/* Legend */}
+      <div className="flex items-center gap-3 flex-wrap px-1">
+        {[
+          { color: ROUTE_COLORS.start, label: "Start" },
+          { color: ROUTE_COLORS.end, label: "Destination" },
+          ...(userLocation ? [{ color: ROUTE_COLORS.user, label: "You" }] : []),
+          ...(joinDistanceM !== null ? [{ color: ROUTE_COLORS.join, label: "Join Point" }] : []),
+        ].map(({ color, label }) => (
+          <div key={label} className="flex items-center gap-1.5">
+            <div style={{ width: 10, height: 10, borderRadius: "50%", background: color, flexShrink: 0 }} />
+            <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>{label}</span>
+          </div>
+        ))}
+      </div>
+
+      {joinDistanceM !== null && <NearestJoinCard distanceM={joinDistanceM} />}
+    </div>
+  );
+}
+
+// ─── Platform-aware Interactive Route Map ─────────────────────────────
+function InteractiveRouteMap({
+  ride,
+  userLocation,
+}: {
+  ride: RidePost;
+  userLocation: UserLocation | null;
+}) {
+  return (
+    <MapErrorBoundary>
+      {IS_NATIVE ? (
+        <RouteMapLeaflet ride={ride} userLocation={userLocation} />
+      ) : (
+        <RouteMapGoogle ride={ride} userLocation={userLocation} />
+      )}
+    </MapErrorBoundary>
+  );
+}
 
 // ─── Member Profile Bottom-Sheet ──────────────────────────────────────
 function MemberProfileSheet({
@@ -161,12 +760,25 @@ function MemberProfileSheet({
 }
 
 // ─── Tab: Details ─────────────────────────────────────────────────────
-function DetailsTab({ ride, currentUserId }: { ride: RidePost; currentUserId: string }) {
+function DetailsTab({
+  ride,
+  currentUserId,
+  currentUserName,
+  onToast,
+}: {
+  ride: RidePost;
+  currentUserId: string;
+  currentUserName: string;
+  onToast: (msg: string, type?: "success" | "error") => void;
+}) {
   const [profiles, setProfiles] = useState<Record<string, UserProfile | null>>({});
   const [selectedMember, setSelectedMember] = useState<{
     userId: string; name: string; role: "Host" | "Rider";
   } | null>(null);
+  const [reqState, setReqState] = useState<"idle" | "loading" | "sent">("idle");
   const isHost = currentUserId === ride.userId;
+  const alreadyJoined = ride.joinedByIds?.includes(currentUserId);
+  const alreadyRequested = ride.pendingRequestIds?.includes(currentUserId) || reqState === "sent";
 
   useEffect(() => {
     const ids = [ride.userId, ...(ride.joinedByIds ?? [])].filter(Boolean);
@@ -175,6 +787,14 @@ function DetailsTab({ ride, currentUserId }: { ride: RidePost; currentUserId: st
       ids.map((id) => getUserProfile(id).then((p) => [id, p] as [string, UserProfile | null]).catch(() => [id, null] as [string, null]))
     ).then((entries) => setProfiles(Object.fromEntries(entries)));
   }, [ride.rideId]);
+
+  const handleJoinRequest = async () => {
+    if (alreadyJoined || alreadyRequested || reqState === "loading") return;
+    setReqState("loading");
+    const result = await sendRideJoinRequest(ride.rideId, currentUserId, currentUserName);
+    if (result.success) { setReqState("sent"); onToast("Request sent! Rider will be notified 🎉", "success"); }
+    else { setReqState("idle"); onToast(result.message, "error"); }
+  };
 
   return (
     <div className="space-y-4 pb-6">
@@ -200,7 +820,7 @@ function DetailsTab({ ride, currentUserId }: { ride: RidePost; currentUserId: st
         />
       )}
 
-      {/* Host context banner (host view) */}
+      {/* Host context banner */}
       {isHost && (
         <div
           className="rounded-2xl p-3 flex items-center gap-2"
@@ -251,9 +871,9 @@ function DetailsTab({ ride, currentUserId }: { ride: RidePost; currentUserId: st
         <p className="text-xs font-semibold mb-3 uppercase tracking-wider" style={{ color: "var(--muted-foreground)" }}>Route</p>
         <div className="flex items-start gap-3">
           <div className="flex flex-col items-center gap-1 pt-0.5">
-            <div className="w-2.5 h-2.5 rounded-full" style={{ background: "var(--primary)" }} />
+            <div className="w-2.5 h-2.5 rounded-full" style={{ background: ROUTE_COLORS.start }} />
             <div className="w-px flex-1 border-l-2 border-dashed" style={{ borderColor: "var(--border)", minHeight: "24px" }} />
-            <div className="w-2.5 h-2.5 rounded-sm" style={{ background: "#f59e0b" }} />
+            <div className="w-2.5 h-2.5 rounded-sm" style={{ background: ROUTE_COLORS.end }} />
           </div>
           <div className="flex flex-col gap-3 flex-1">
             <div>
@@ -271,6 +891,26 @@ function DetailsTab({ ride, currentUserId }: { ride: RidePost; currentUserId: st
           <span className="text-sm font-medium" style={{ color: "var(--foreground)" }}>
             {formatRideDate(ride.date, ride.time)}
           </span>
+        </div>
+      </div>
+
+      {/* Ride Stats */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="rounded-2xl p-3.5" style={{ background: "var(--card)", border: "1px solid var(--glass-border)" }}>
+          <div className="flex items-center gap-2 mb-1">
+            <Users className="w-3.5 h-3.5" style={{ color: "var(--primary)" }} />
+            <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--muted-foreground)" }}>Seats</p>
+          </div>
+          <p className="font-bold text-lg" style={{ color: "var(--foreground)" }}>{ride.seatsLeft}</p>
+          <p className="text-xs" style={{ color: "var(--muted-foreground)" }}>of {ride.seats} available</p>
+        </div>
+        <div className="rounded-2xl p-3.5" style={{ background: "var(--card)", border: "1px solid var(--glass-border)" }}>
+          <div className="flex items-center gap-2 mb-1">
+            <DollarSign className="w-3.5 h-3.5" style={{ color: "#16a34a" }} />
+            <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--muted-foreground)" }}>Fare</p>
+          </div>
+          <p className="font-bold text-lg" style={{ color: "#16a34a" }}>Shared</p>
+          <p className="text-xs" style={{ color: "var(--muted-foreground)" }}>Cost sharing</p>
         </div>
       </div>
 
@@ -320,13 +960,12 @@ function DetailsTab({ ride, currentUserId }: { ride: RidePost; currentUserId: st
         </div>
       )}
 
-      {/* Members — tappable */}
+      {/* Members */}
       <div className="rounded-2xl p-4" style={{ background: "var(--card)", border: "1px solid var(--glass-border)" }}>
         <p className="text-xs font-semibold mb-3 uppercase tracking-wider" style={{ color: "var(--muted-foreground)" }}>
           Members ({1 + (ride.joinedByIds?.length ?? 0)})
         </p>
         <div className="space-y-1">
-          {/* Host row */}
           <button
             className="w-full flex items-center gap-3 py-2 px-2 rounded-xl text-left transition-all active:scale-[0.99]"
             style={{ background: isHost ? "rgba(59,130,246,0.06)" : "transparent" }}
@@ -357,7 +996,6 @@ function DetailsTab({ ride, currentUserId }: { ride: RidePost; currentUserId: st
             <ChevronRight className="w-3.5 h-3.5 flex-shrink-0" style={{ color: "var(--muted-foreground)" }} />
           </button>
 
-          {/* Joiner rows */}
           {(ride.joinedByNames ?? []).map((name, i) => {
             const uid = ride.joinedByIds?.[i] ?? name;
             return (
@@ -403,19 +1041,76 @@ function DetailsTab({ ride, currentUserId }: { ride: RidePost; currentUserId: st
           </p>
         </div>
       )}
+
+      {/* Join / Action Buttons */}
+      {!isHost && (
+        <div className="space-y-3 pt-1">
+          <button
+            onClick={handleJoinRequest}
+            disabled={alreadyJoined || alreadyRequested || reqState === "loading" || ride.seatsLeft === 0}
+            className="w-full py-4 rounded-2xl font-bold text-white flex items-center justify-center gap-2 transition-all active:scale-[0.98] disabled:opacity-60"
+            style={{
+              background: alreadyJoined
+                ? "linear-gradient(135deg,#16a34a,#22c55e)"
+                : alreadyRequested
+                ? "linear-gradient(135deg,#f59e0b,#fbbf24)"
+                : ride.seatsLeft === 0
+                ? "var(--muted)"
+                : "linear-gradient(135deg,#2E5BFF,#6b8fff)",
+              boxShadow: alreadyJoined
+                ? "0 4px 16px rgba(22,163,74,0.35)"
+                : alreadyRequested
+                ? "0 4px 16px rgba(245,158,11,0.35)"
+                : "0 4px 16px rgba(46,91,255,0.4)",
+              fontSize: "1rem",
+            }}
+          >
+            {reqState === "loading" ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : alreadyJoined ? (
+              <><span>✅</span> Already Joined</>
+            ) : alreadyRequested ? (
+              <><Send className="w-4 h-4" /> Request Sent</>
+            ) : ride.seatsLeft === 0 ? (
+              "Ride Full"
+            ) : (
+              <><Route className="w-4 h-4" /> Request to Join</>
+            )}
+          </button>
+
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              className="py-3.5 rounded-2xl font-semibold flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
+              style={{ background: "var(--card)", border: "1px solid var(--glass-border)", color: "var(--foreground)" }}
+            >
+              <MessageCircle className="w-4 h-4" style={{ color: "var(--primary)" }} />
+              Chat Driver
+            </button>
+            <button
+              className="py-3.5 rounded-2xl font-semibold flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
+              style={{ background: "var(--card)", border: "1px solid var(--glass-border)", color: "var(--foreground)" }}
+            >
+              <PhoneCall className="w-4 h-4" style={{ color: "#16a34a" }} />
+              Call Driver
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-// ─── Tab: Live Location ───────────────────────────────────────────────
-function LiveLocationTab({
+// ─── Tab: Interactive Route Map + Live Location ────────────────────────
+function LocationTab({
   ride,
   currentUserId,
   currentUserName,
+  userLocation,
 }: {
   ride: RidePost;
   currentUserId: string;
   currentUserName: string;
+  userLocation: UserLocation | null;
 }) {
   const [sharing, setSharing] = useState(false);
   const [locations, setLocations] = useState<ParticipantLocation[]>([]);
@@ -423,30 +1118,18 @@ function LiveLocationTab({
   const [shareError, setShareError] = useState<string | null>(null);
   const watchIdRef = useRef<number | null>(null);
 
-  // Centre of locations for map embed
-  const mapCenter = locations.length > 0
-    ? {
-        lat: locations.reduce((s, l) => s + l.lat, 0) / locations.length,
-        lng: locations.reduce((s, l) => s + l.lng, 0) / locations.length,
-      }
-    : ride.fromCoords ?? { lat: 12.9716, lng: 77.5946 }; // default: Bengaluru
-
-  const mapUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${mapCenter.lng - 0.02}%2C${mapCenter.lat - 0.015}%2C${mapCenter.lng + 0.02}%2C${mapCenter.lat + 0.015}&layer=mapnik&marker=${mapCenter.lat}%2C${mapCenter.lng}`;
-
-  // Fetch all participants' locations
-  const fetchLocations = async () => {
+  const fetchLocations = useCallback(async () => {
     const locs = await getRideLocations(ride.rideId);
     setLocations(locs);
     setLoadingLoc(false);
-  };
+  }, [ride.rideId]);
 
   useEffect(() => {
     fetchLocations();
     const interval = setInterval(fetchLocations, 10_000);
     return () => clearInterval(interval);
-  }, [ride.rideId]);
+  }, [fetchLocations]);
 
-  // Toggle location sharing
   const toggleSharing = () => {
     if (sharing) {
       if (watchIdRef.current !== null) {
@@ -493,6 +1176,16 @@ function LiveLocationTab({
 
   return (
     <div className="space-y-4 pb-6">
+      {/* Interactive Route Map */}
+      <InteractiveRouteMap ride={ride} userLocation={userLocation} />
+
+      {/* Divider */}
+      <div className="flex items-center gap-3">
+        <div className="flex-1 h-px" style={{ background: "var(--border)" }} />
+        <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--muted-foreground)" }}>Live Location</span>
+        <div className="flex-1 h-px" style={{ background: "var(--border)" }} />
+      </div>
+
       {/* Share toggle */}
       <div
         className="rounded-2xl p-4 flex items-center justify-between"
@@ -534,18 +1227,6 @@ function LiveLocationTab({
           {shareError}
         </div>
       )}
-
-      {/* Map embed */}
-      <div className="rounded-2xl overflow-hidden" style={{ border: "1px solid var(--glass-border)", height: "260px" }}>
-        <iframe
-          src={mapUrl}
-          width="100%"
-          height="260"
-          style={{ border: 0 }}
-          title="Ride map"
-          loading="lazy"
-        />
-      </div>
 
       {/* Participants */}
       <div
@@ -610,25 +1291,21 @@ function ChatTab({
   const [sending, setSending] = useState(false);
   const [loadingChat, setLoadingChat] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const lastMessageIdRef = useRef<string | undefined>(undefined);
 
-  const fetchMessages = async (initial = false) => {
+  const fetchMessages = useCallback(async (initial = false) => {
     const msgs = await getMessages(ride.rideId);
     setMessages(msgs);
     setLoadingChat(false);
-    if (msgs.length > 0) {
-      lastMessageIdRef.current = msgs[msgs.length - 1].messageId;
-    }
     if (initial || msgs.length > 0) {
       setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: initial ? "auto" : "smooth" }), 50);
     }
-  };
+  }, [ride.rideId]);
 
   useEffect(() => {
     fetchMessages(true);
     const interval = setInterval(() => fetchMessages(false), 5_000);
     return () => clearInterval(interval);
-  }, [ride.rideId]);
+  }, [fetchMessages]);
 
   const handleSend = async () => {
     const text = input.trim();
@@ -636,7 +1313,6 @@ function ChatTab({
     setSending(true);
     setInput("");
 
-    // Optimistic update
     const optimistic: ChatMessage = {
       rideId: ride.rideId,
       messageId: `${new Date().toISOString()}#optimistic`,
@@ -650,7 +1326,6 @@ function ChatTab({
 
     await sendMessage(ride.rideId, currentUserId, currentUserName, text);
     setSending(false);
-    // Refetch to get the real messageId
     fetchMessages(false);
   };
 
@@ -663,7 +1338,6 @@ function ChatTab({
 
   return (
     <div className="flex flex-col" style={{ height: "calc(100vh - 260px)", minHeight: "360px" }}>
-      {/* Message list */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
         {loadingChat ? (
           <div className="flex justify-center py-8">
@@ -726,21 +1400,13 @@ function ChatTab({
         <div ref={bottomRef} />
       </div>
 
-      {/* Input bar */}
       <div
         className="px-4 py-3 flex items-end gap-3"
-        style={{
-          borderTop: "1px solid var(--glass-border)",
-          background: "var(--background)",
-        }}
+        style={{ borderTop: "1px solid var(--glass-border)", background: "var(--background)" }}
       >
         <div
           className="flex-1 rounded-2xl px-4 py-2.5 flex items-center"
-          style={{
-            background: "var(--card)",
-            border: "1px solid var(--glass-border)",
-            minHeight: "44px",
-          }}
+          style={{ background: "var(--card)", border: "1px solid var(--glass-border)", minHeight: "44px" }}
         >
           <textarea
             value={input}
@@ -749,22 +1415,14 @@ function ChatTab({
             placeholder="Type a message…"
             rows={1}
             className="flex-1 bg-transparent outline-none resize-none"
-            style={{
-              color: "var(--foreground)",
-              fontSize: "0.9rem",
-              maxHeight: "100px",
-              lineHeight: 1.5,
-            }}
+            style={{ color: "var(--foreground)", fontSize: "0.9rem", maxHeight: "100px", lineHeight: 1.5 }}
           />
         </div>
         <button
           onClick={handleSend}
           disabled={!input.trim() || sending}
           className="w-11 h-11 rounded-2xl flex items-center justify-center flex-shrink-0 transition-all hover:opacity-90 active:scale-95 disabled:opacity-40"
-          style={{
-            background: "linear-gradient(135deg, var(--primary), #6d28d9)",
-            boxShadow: "0 4px 14px rgba(109,40,217,0.35)",
-          }}
+          style={{ background: "linear-gradient(135deg, var(--primary), #6d28d9)", boxShadow: "0 4px 14px rgba(109,40,217,0.35)" }}
         >
           {sending
             ? <Loader2 className="w-5 h-5 text-white animate-spin" />
@@ -777,20 +1435,50 @@ function ChatTab({
 }
 
 // ─── Root: RideDetailScreen ───────────────────────────────────────────
-export function RideDetailScreen({ ride, currentUserId, currentUserName, onClose }: RideDetailScreenProps) {
+export function RideDetailScreen({
+  ride,
+  currentUserId,
+  currentUserName,
+  userLocation,
+  onClose,
+}: RideDetailScreenProps) {
   const [tab, setTab] = useState<Tab>("details");
+  const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
+
+  const showToast = useCallback((msg: string, type: "success" | "error" = "success") => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3500);
+  }, []);
 
   const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: "details",  label: "Details",  icon: <Car className="w-4 h-4" /> },
-    { id: "location", label: "Location", icon: <MapPin className="w-4 h-4" /> },
+    { id: "location", label: "Route Map", icon: <Route className="w-4 h-4" /> },
     { id: "chat",     label: "Chat",     icon: <MessageCircle className="w-4 h-4" /> },
   ];
 
   return (
     <div
       className="fixed inset-0 z-50 flex flex-col"
-      style={{ background: "var(--background)" }}
+      style={{ background: "var(--background)", fontFamily: "'Inter', sans-serif" }}
     >
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+      `}</style>
+
+      {/* Toast */}
+      {toast && (
+        <div
+          className="fixed top-6 left-1/2 -translate-x-1/2 z-[70] px-5 py-3 rounded-2xl text-white text-sm font-medium shadow-xl"
+          style={{
+            background: toast.type === "success" ? "rgba(22,163,74,0.95)" : "rgba(220,38,38,0.95)",
+            backdropFilter: "blur(16px)",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {toast.type === "success" ? "✅" : "❌"} {toast.msg}
+        </div>
+      )}
+
       {/* Header */}
       <div
         className="flex items-center gap-3 px-4 pt-5 pb-3 flex-shrink-0"
@@ -812,7 +1500,6 @@ export function RideDetailScreen({ ride, currentUserId, currentUserName, onClose
             Hosted by {ride.posterName}
           </p>
         </div>
-        {/* Seats badge */}
         <span
           className="text-xs font-semibold px-2.5 py-1 rounded-full flex-shrink-0"
           style={{
@@ -849,12 +1536,22 @@ export function RideDetailScreen({ ride, currentUserId, currentUserName, onClose
       <div className="flex-1 overflow-y-auto">
         {tab === "details" && (
           <div className="px-4 pt-4">
-            <DetailsTab ride={ride} currentUserId={currentUserId} />
+            <DetailsTab
+              ride={ride}
+              currentUserId={currentUserId}
+              currentUserName={currentUserName}
+              onToast={showToast}
+            />
           </div>
         )}
         {tab === "location" && (
           <div className="px-4 pt-4">
-            <LiveLocationTab ride={ride} currentUserId={currentUserId} currentUserName={currentUserName} />
+            <LocationTab
+              ride={ride}
+              currentUserId={currentUserId}
+              currentUserName={currentUserName}
+              userLocation={userLocation ?? null}
+            />
           </div>
         )}
         {tab === "chat" && (

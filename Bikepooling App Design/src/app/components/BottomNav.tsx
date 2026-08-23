@@ -17,6 +17,7 @@ interface NavItem {
     strokeWidth?: number;
     color?: string;
     "aria-hidden"?: boolean;
+    style?: React.CSSProperties;
   }>;
   label: string;
   ariaLabel: string;
@@ -48,16 +49,16 @@ const NAV_ITEMS: NavItem[] = [
 
 // Design tokens
 const COLORS = {
-  navBg: "#1B1D21",
-  indicatorBg: "#2C3138",
+  navBg: "rgba(23, 25, 30, 0.92)",
+  indicatorBg: "rgba(255, 255, 255, 0.12)",
   activeText: "#FFFFFF",
   inactiveText: "#8B9097",
-  postGradient: "linear-gradient(135deg, #1d4ed8, #3b82f6)",
-  postGlow: "rgba(59,130,246,0.45)",
+  postGradient: "linear-gradient(135deg, #2563EB 0%, #6366F1 50%, #8B5CF6 100%)",
+  postGlow: "rgba(99, 102, 241, 0.65)",
   notifDot: "#3B82F6",
-  navBorder: "rgba(255,255,255,0.07)",
+  navBorder: "rgba(255,255,255,0.12)",
   navShadow:
-    "0 -1px 0 rgba(255,255,255,0.05), 0 8px 40px rgba(0,0,0,0.55), 0 2px 16px rgba(0,0,0,0.4)",
+    "0 -1px 0 rgba(255,255,255,0.1), 0 12px 48px rgba(0,0,0,0.65), 0 4px 20px rgba(0,0,0,0.45)",
 } as const;
 
 // ─── NavItemButton ─────────────────────────────────────────────────────────────
@@ -94,7 +95,7 @@ function NavItemButton({
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
-        gap: isPost ? "0px" : "3px",
+        gap: isPost ? "1px" : "3px",
         // Touch target — minimum 48×48
         minHeight: "54px",
         minWidth: "48px",
@@ -106,11 +107,12 @@ function NavItemButton({
         borderRadius: "9999px",
         // Stacking above the sliding indicator
         position: "relative",
-        zIndex: 1,
+        zIndex: isPost ? 5 : 1,
         // Interaction feedback
         WebkitTapHighlightColor: "transparent",
         outline: "none",
-        transition: "opacity 0.15s ease",
+        transition: "transform 0.2s ease, opacity 0.15s ease",
+        transform: isPost ? "translateY(-6px)" : "none",
       }}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -119,30 +121,37 @@ function NavItemButton({
         }
       }}
     >
-      {/* Post Tab — distinct pill/button style */}
+      {/* Post Tab — distinct elevated pill/button style */}
       {isPost ? (
         <span
           aria-hidden
           style={{
+            position: "relative",
             display: "inline-flex",
             alignItems: "center",
             justifyContent: "center",
-            width: "42px",
-            height: "42px",
-            borderRadius: "14px",
+            width: "46px",
+            height: "46px",
+            borderRadius: "50%",
             background: COLORS.postGradient,
+            border: "1.5px solid rgba(255, 255, 255, 0.35)",
             boxShadow: isActive
-              ? `0 0 0 3px rgba(59,130,246,0.25), 0 6px 20px ${COLORS.postGlow}`
-              : `0 4px 16px ${COLORS.postGlow}`,
+              ? `0 0 0 4px rgba(99, 102, 241, 0.35), 0 8px 24px ${COLORS.postGlow}`
+              : `0 6px 20px ${COLORS.postGlow}, 0 0 12px rgba(139, 92, 246, 0.4)`,
             transition: "transform 0.25s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.25s ease",
-            transform: isActive ? "scale(1.08)" : "scale(1)",
+            transform: isActive ? "scale(1.12)" : "scale(1)",
+            animation: isActive ? "none" : "postGlowPulse 3s ease-in-out infinite",
           }}
         >
           <Icon
-            size={20}
-            strokeWidth={2.75}
+            size={22}
+            strokeWidth={3}
             color={COLORS.activeText}
             aria-hidden
+            style={{
+              transition: "transform 0.3s cubic-bezier(0.34,1.56,0.64,1)",
+              transform: isActive ? "rotate(90deg)" : "rotate(0deg)",
+            }}
           />
         </span>
       ) : (
@@ -192,11 +201,9 @@ function NavItemButton({
       <span
         style={{
           fontSize: "10px",
-          fontWeight: isActive ? 600 : 400,
+          fontWeight: isActive || isPost ? 600 : 400,
           color: isPost
-            ? isActive
-              ? COLORS.activeText
-              : COLORS.inactiveText
+            ? "#60A5FA"
             : iconColor,
           letterSpacing: "0.02em",
           lineHeight: 1,
@@ -204,6 +211,7 @@ function NavItemButton({
           userSelect: "none",
           pointerEvents: "none",
           fontFamily: "'Inter', 'Space Grotesk', system-ui, sans-serif",
+          marginTop: isPost ? "2px" : "0px",
         }}
       >
         {item.label}
@@ -253,11 +261,15 @@ export function BottomNav({ active, onNav, hasNotification = false }: BottomNavP
 
   return (
     <>
-      {/* Keyframe for notification pulse — injected once */}
+      {/* Keyframe for notification pulse & post button ambient glow */}
       <style>{`
         @keyframes notifPulse {
           0%, 100% { opacity: 1; transform: scale(1); }
           50%       { opacity: 0.7; transform: scale(1.25); }
+        }
+        @keyframes postGlowPulse {
+          0%, 100% { box-shadow: 0 6px 20px rgba(99, 102, 241, 0.65), 0 0 12px rgba(139, 92, 246, 0.4); }
+          50%       { box-shadow: 0 8px 28px rgba(99, 102, 241, 0.85), 0 0 20px rgba(139, 92, 246, 0.65); }
         }
       `}</style>
 
