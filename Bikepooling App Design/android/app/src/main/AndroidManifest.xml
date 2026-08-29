@@ -73,11 +73,16 @@
             android:name="com.google.android.geo.API_KEY"
             android:value="AIzaSyA2BAXl5IWhVeaMbY5Ned7aBx8z5R2z1gQ" />
 
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="dostwheels_alerts" />
+
     </application>
 
     <!-- Permissions -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
 </manifest>

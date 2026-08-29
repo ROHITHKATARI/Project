@@ -8,6 +8,11 @@ const config: CapacitorConfig = {
   // so that Capacitor's local asset server works correctly. Setting it to
   // 'https' causes the WebView to reload under a different origin which
   // blanks the screen after a few seconds.
+  plugins: {
+    PushNotifications: {
+      presentationOptions: ["badge", "sound", "alert"],
+    },
+  },
 };
 
 export default config;

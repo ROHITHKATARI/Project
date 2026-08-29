@@ -13,7 +13,7 @@ import { DiscoverScreen } from "./components/DiscoverScreen";
 import { MyRidesScreen } from "./components/MyRidesScreen";
 import { TandemBike } from "./components/ui/TandemBike";
 import { RideDetailScreen } from "./components/RideDetailScreen";
-import type { RidePost } from "../lib/ridesDb";
+import { getRideById, type RidePost } from "../lib/ridesDb";
 import { getCurrentAuthUser, logoutUser, getAWSCredentials } from "../lib/auth";
 import { exchangeNativeOAuthCode } from "../lib/nativeOAuth";
 import { upsertUserProfile } from "../lib/userDb";
@@ -22,6 +22,10 @@ import {
   clearCachedLocation,
   type UserLocation,
 } from "../lib/locationService";
+import {
+  initializeFCM,
+  subscribeToForegroundNotifications,
+} from "../lib/pushNotifications";
 
 // ─── DiscoverAndMatch wrapper ─────────────────────────────────────────
 function DiscoverAndMatch({
@@ -136,6 +140,38 @@ function AppShell({
     return () => { (AppShell as unknown as { _goBack?: () => void })._goBack = undefined; };
   }, [goBack]);
 
+  // ─── FCM Push Notifications Initialization & Deep-Linking ───────────
+  React.useEffect(() => {
+    initializeFCM({
+      onTap: async (data) => {
+        console.log("[FCM DeepLink] Push notification tapped:", data);
+        const targetId = data.rideId || data.chatId;
+        if (targetId) {
+          try {
+            const ride = await getRideById(targetId);
+            if (ride) {
+              setSelectedRide(ride);
+              return;
+            }
+          } catch (e) {
+            console.error("[FCM DeepLink] Failed to load ride for notification:", e);
+          }
+        }
+        // Fallback for SYSTEM_ANNOUNCEMENT, unknown types, or missing deep-link data
+        navigateTo("notifications");
+      },
+    });
+
+    const unsubscribeForeground = subscribeToForegroundNotifications((notif) => {
+      const title = notif.title || "Notification";
+      const body = notif.body ? `: ${notif.body}` : "";
+      toast(`🔔 ${title}${body}`);
+    });
+
+    return () => {
+      unsubscribeForeground();
+    };
+  }, [navigateTo]);
 
   const toast = (msg: string) => {
     setShowToast(msg);
