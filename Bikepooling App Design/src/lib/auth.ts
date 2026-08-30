@@ -13,6 +13,7 @@ import {
 } from "aws-amplify/auth";
 import { Capacitor } from "@capacitor/core";
 import { startNativeGoogleSignIn } from "./nativeOAuth";
+import { deactivateDeviceToken } from "./deviceRegistrationDb";
 
 // ─── Types ────────────────────────────────────────────────────────────
 export interface AuthUser {
@@ -135,9 +136,20 @@ export async function signInWithGoogle(): Promise<void> {
   }
 }
 
-/** Sign out the current user */
+/** Sign out the current user and deactivate the current device token */
 export async function logoutUser(): Promise<void> {
   try {
+    // 1. Deactivate device registration before clearing the Cognito session
+    try {
+      const authUser = await getCurrentAuthUser();
+      if (authUser?.userId) {
+        await deactivateDeviceToken(authUser.userId);
+      }
+    } catch (deactivateErr) {
+      console.warn("[Auth] Device deactivation non-fatal error during logout:", deactivateErr);
+    }
+
+    // 2. Sign out of Cognito
     await signOut();
   } catch (err) {
     console.error("Logout error:", err);

@@ -24,8 +24,10 @@ import {
 } from "../lib/locationService";
 import {
   initializeFCM,
+  subscribeToFCMToken,
   subscribeToForegroundNotifications,
 } from "../lib/pushNotifications";
+import { registerDeviceToken } from "../lib/deviceRegistrationDb";
 
 // ─── DiscoverAndMatch wrapper ─────────────────────────────────────────
 function DiscoverAndMatch({
@@ -162,6 +164,17 @@ function AppShell({
       },
     });
 
+    // Sync FCM device token to DynamoDB for the authenticated user
+    const unsubscribeToken = subscribeToFCMToken((token) => {
+      if (!user?.id || !token) return;
+      registerDeviceToken({
+        userId: user.id,
+        token,
+      }).catch((err) => {
+        console.warn("[FCM] Device registration sync non-fatal error:", err?.message || err);
+      });
+    });
+
     const unsubscribeForeground = subscribeToForegroundNotifications((notif) => {
       const title = notif.title || "Notification";
       const body = notif.body ? `: ${notif.body}` : "";
@@ -169,9 +182,10 @@ function AppShell({
     });
 
     return () => {
+      unsubscribeToken();
       unsubscribeForeground();
     };
-  }, [navigateTo]);
+  }, [user.id, navigateTo]);
 
   const toast = (msg: string) => {
     setShowToast(msg);
