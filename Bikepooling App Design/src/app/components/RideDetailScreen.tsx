@@ -7,7 +7,12 @@ import {
   PhoneCall, Users, DollarSign, Route,
 } from "lucide-react";
 import type { RidePost } from "../../lib/ridesDb";
-import { sendJoinRequest as sendRideJoinRequest } from "../../lib/ridesDb";
+import {
+  sendJoinRequest as sendRideJoinRequest,
+  approveJoinRequest,
+  declineJoinRequest,
+  getRideById,
+} from "../../lib/ridesDb";
 import { sendMessage, getMessages, type ChatMessage } from "../../lib/chatDb";
 import { updateMyLocation, getRideLocations, type ParticipantLocation } from "../../lib/locationDb";
 import { getUserProfile, type UserProfile } from "../../lib/userDb";
@@ -765,20 +770,55 @@ function DetailsTab({
   currentUserId,
   currentUserName,
   onToast,
+  onRideUpdated,
 }: {
   ride: RidePost;
   currentUserId: string;
   currentUserName: string;
   onToast: (msg: string, type?: "success" | "error") => void;
+  onRideUpdated?: () => void;
 }) {
   const [profiles, setProfiles] = useState<Record<string, UserProfile | null>>({});
   const [selectedMember, setSelectedMember] = useState<{
     userId: string; name: string; role: "Host" | "Rider";
   } | null>(null);
   const [reqState, setReqState] = useState<"idle" | "loading" | "sent">("idle");
+  const [pendingActions, setPendingActions] = useState<Record<string, "approving" | "declining">>({});
   const isHost = currentUserId === ride.userId;
   const alreadyJoined = ride.joinedByIds?.includes(currentUserId);
   const alreadyRequested = ride.pendingRequestIds?.includes(currentUserId) || reqState === "sent";
+
+  const handleApprove = async (requesterId: string, requesterName: string) => {
+    setPendingActions((prev) => ({ ...prev, [requesterId]: "approving" }));
+    const result = await approveJoinRequest(ride.rideId, requesterId, requesterName);
+    if (result.success) {
+      onToast(`${requesterName.split(" ")[0]} approved! 🎉`, "success");
+      onRideUpdated?.();
+    } else {
+      onToast(result.message, "error");
+    }
+    setPendingActions((prev) => {
+      const next = { ...prev };
+      delete next[requesterId];
+      return next;
+    });
+  };
+
+  const handleDecline = async (requesterId: string, requesterName: string) => {
+    setPendingActions((prev) => ({ ...prev, [requesterId]: "declining" }));
+    const result = await declineJoinRequest(ride.rideId, requesterId);
+    if (result.success) {
+      onToast(`${requesterName.split(" ")[0]}'s request declined.`, "success");
+      onRideUpdated?.();
+    } else {
+      onToast(result.message, "error");
+    }
+    setPendingActions((prev) => {
+      const next = { ...prev };
+      delete next[requesterId];
+      return next;
+    });
+  };
 
   useEffect(() => {
     const ids = [ride.userId, ...(ride.joinedByIds ?? [])].filter(Boolean);
@@ -1031,6 +1071,66 @@ function DetailsTab({
           })}
         </div>
       </div>
+
+      {/* Pending Requests — host only */}
+      {isHost && (ride.pendingRequestIds?.length ?? 0) > 0 && (
+        <div className="rounded-2xl p-4" style={{ background: "var(--card)", border: "1px solid var(--glass-border)" }}>
+          <p
+            className="text-xs font-semibold mb-3 uppercase tracking-wider"
+            style={{ color: "var(--muted-foreground)" }}
+          >
+            Pending Requests ({ride.pendingRequestIds!.length})
+          </p>
+          <div className="space-y-2">
+            {(ride.pendingRequestIds ?? []).map((requesterId, i) => {
+              const requesterName = ride.pendingRequestNames?.[i] ?? "Rider";
+              const action = pendingActions[requesterId];
+              return (
+                <div
+                  key={requesterId}
+                  className="flex items-center gap-3 py-2 px-2 rounded-xl"
+                  style={{ background: "var(--secondary)" }}
+                >
+                  <div
+                    className="w-9 h-9 rounded-xl flex items-center justify-center text-white font-bold text-xs flex-shrink-0"
+                    style={{ background: avatarColor(requesterId) }}
+                  >
+                    {initials(requesterName)}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold truncate" style={{ color: "var(--foreground)" }}>
+                      {requesterName}
+                    </p>
+                    <p className="text-xs" style={{ color: "var(--muted-foreground)" }}>Wants to join</p>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <button
+                      onClick={() => handleApprove(requesterId, requesterName)}
+                      disabled={!!action}
+                      className="px-3 py-1.5 rounded-xl text-xs font-semibold transition-all active:scale-95 disabled:opacity-50"
+                      style={{ background: "rgba(22,163,74,0.12)", color: "#16a34a" }}
+                    >
+                      {action === "approving"
+                        ? <Loader2 className="w-3 h-3 animate-spin" />
+                        : "Approve"}
+                    </button>
+                    <button
+                      onClick={() => handleDecline(requesterId, requesterName)}
+                      disabled={!!action}
+                      className="px-3 py-1.5 rounded-xl text-xs font-semibold transition-all active:scale-95 disabled:opacity-50"
+                      style={{ background: "rgba(239,68,68,0.12)", color: "#dc2626" }}
+                    >
+                      {action === "declining"
+                        ? <Loader2 className="w-3 h-3 animate-spin" />
+                        : "Decline"}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Notes */}
       {ride.notes && (
@@ -1444,6 +1544,22 @@ export function RideDetailScreen({
 }: RideDetailScreenProps) {
   const [tab, setTab] = useState<Tab>("details");
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
+  const [liveRide, setLiveRide] = useState<RidePost>(ride);
+
+  // Fix A: always load a fresh copy from DynamoDB so pendingRequestIds reflects
+  // the latest state — the prop is a stale in-memory snapshot from the list.
+  const refreshRide = useCallback(async () => {
+    try {
+      const fresh = await getRideById(ride.rideId);
+      if (fresh) setLiveRide(fresh);
+    } catch {
+      // Non-fatal — keep showing existing data
+    }
+  }, [ride.rideId]);
+
+  useEffect(() => {
+    refreshRide();
+  }, [refreshRide]);
 
   const showToast = useCallback((msg: string, type: "success" | "error" = "success") => {
     setToast({ msg, type });
@@ -1537,10 +1653,11 @@ export function RideDetailScreen({
         {tab === "details" && (
           <div className="px-4 pt-4">
             <DetailsTab
-              ride={ride}
+              ride={liveRide}
               currentUserId={currentUserId}
               currentUserName={currentUserName}
               onToast={showToast}
+              onRideUpdated={refreshRide}
             />
           </div>
         )}

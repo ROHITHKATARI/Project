@@ -121,16 +121,14 @@ export async function createNotification(
   forceRefresh = false
 ): Promise<NotificationRecord | null> {
   const authUser = await getCurrentAuthUser();
-  const resolvedUserId = input.userId || authUser?.userId;
-
-  if (!resolvedUserId) {
-    console.warn("[NotificationsDb] createNotification skipped: unauthenticated user");
+  if (!authUser?.userId) {
+    console.warn("[NotificationsDb] createNotification skipped: unauthenticated caller");
     return null;
   }
 
-  // Prevent cross-user partition writes from the client
-  if (authUser?.userId && input.userId && input.userId !== authUser.userId) {
-    console.error("[NotificationsDb] Security error: target userId does not match session sub");
+  const targetUserId = input.userId || authUser.userId;
+  if (!targetUserId) {
+    console.warn("[NotificationsDb] createNotification skipped: missing target userId");
     return null;
   }
 
@@ -143,14 +141,14 @@ export async function createNotification(
   }
 
   const item: NotificationRecord = {
-    userId: resolvedUserId,
+    userId: targetUserId,
     notificationId,
     type: input.type,
     title: input.title.trim(),
     body: input.body.trim(),
     read: false,
     createdAt: now,
-    senderId: input.senderId,
+    senderId: input.senderId || authUser.userId,
     senderName: input.senderName,
     rideId: input.rideId,
     chatId: input.chatId,
@@ -211,6 +209,131 @@ export async function getNotification(
 }
 
 /**
+ * Backfill RIDE_REQUEST_RECEIVED notifications for the authenticated ride owner.
+ *
+ * Root cause fix: User B (passenger) cannot write into User A's (ride owner's)
+ * DynamoDB partition because the IAM LeadingKeys policy enforces row-level
+ * isolation keyed to the calling identity's Cognito sub. The PutCommand sent
+ * by the passenger's client is rejected with AccessDeniedException, silently
+ * swallowed by sendJoinRequest's .catch(), and the notification is never stored.
+ *
+ * Solution: when User A opens NotificationsScreen, their own client (running
+ * under User A's credentials) inspects their rides for pending requesters that
+ * do not yet have a corresponding RIDE_REQUEST_RECEIVED notification, and
+ * writes those notifications using User A's own credentials — satisfying the
+ * LeadingKeys constraint.
+ *
+ * This is idempotent: a notification is only created once per (rideId, requesterId)
+ * pair. Subsequent loads are no-ops because the existing notificationId check
+ * prevents duplicate writes.
+ *
+ * NOTE: The ride query is intentionally inlined here (not imported from ridesDb.ts)
+ * to avoid a circular dependency: ridesDb → notificationsDb → ridesDb.
+ */
+async function syncRideRequestNotifications(
+  ownerId: string,
+  existingNotifications: NotificationRecord[]
+): Promise<NotificationRecord[]> {
+  try {
+    // Inline query for rides owned by this user (mirrors getRidesByUserId
+    // from ridesDb.ts but without creating a circular import)
+    const docClient = await getDocClient();
+    const ridesResult = await docClient.send(
+      new QueryCommand({
+        TableName: "dostwheels-rides",
+        IndexName: "userId-index",
+        KeyConditionExpression: "userId = :uid",
+        ExpressionAttributeValues: { ":uid": ownerId },
+      })
+    );
+    const ownedRides = (ridesResult.Items ?? []) as Array<{
+      rideId: string;
+      userId: string;
+      from: string;
+      to: string;
+      updatedAt?: string;
+      pendingRequestIds?: string[];
+      pendingRequestNames?: string[];
+    }>;
+    if (ownedRides.length === 0) return [];
+
+    // Build a Set of already-notified (rideId, requesterId) pairs from existing records
+    const alreadyNotified = new Set<string>();
+    for (const n of existingNotifications) {
+      if (n.type === "RIDE_REQUEST_RECEIVED" && n.rideId && n.senderId) {
+        alreadyNotified.add(`${n.rideId}#${n.senderId}`);
+      }
+    }
+
+    const newNotifications: NotificationRecord[] = [];
+
+    for (const ride of ownedRides) {
+      const pendingIds = ride.pendingRequestIds ?? [];
+      const pendingNames = ride.pendingRequestNames ?? [];
+
+      for (let i = 0; i < pendingIds.length; i++) {
+        const requesterId = pendingIds[i];
+        const requesterName = pendingNames[i] ?? "A rider";
+        const key = `${ride.rideId}#${requesterId}`;
+
+        if (alreadyNotified.has(key)) continue; // already written, skip
+
+        // Deterministic notificationId so re-runs are idempotent
+        const deterministicId = `RRREQ#${ride.rideId}#${requesterId}`;
+
+        const item: NotificationRecord = {
+          userId: ownerId,
+          notificationId: deterministicId,
+          type: "RIDE_REQUEST_RECEIVED",
+          title: "New Ride Request",
+          body: `${requesterName} requested to join your ride from ${ride.from} to ${ride.to}.`,
+          read: false,
+          createdAt: ride.updatedAt ?? new Date().toISOString(),
+          senderId: requesterId,
+          senderName: requesterName,
+          rideId: ride.rideId,
+          data: {
+            rideId: ride.rideId,
+            requesterId,
+            from: ride.from,
+            to: ride.to,
+          },
+        };
+
+        try {
+          const putDocClient = await getDocClient();
+          await putDocClient.send(
+            new PutCommand({
+              TableName: NOTIFICATIONS_TABLE,
+              Item: item,
+              // Only write if this notificationId doesn't already exist
+              ConditionExpression: "attribute_not_exists(notificationId)",
+            })
+          );
+          newNotifications.push(item);
+          alreadyNotified.add(key); // prevent duplicates within this run
+        } catch (putErr) {
+          const name = (putErr as { name?: string }).name;
+          if (name === "ConditionalCheckFailedException") {
+            // Already exists — race condition or duplicate run, safe to ignore
+          } else {
+            console.warn(
+              "[NotificationsDb] syncRideRequestNotifications: non-fatal write error:",
+              putErr
+            );
+          }
+        }
+      }
+    }
+
+    return newNotifications;
+  } catch (err) {
+    console.warn("[NotificationsDb] syncRideRequestNotifications failed (non-fatal):", err);
+    return [];
+  }
+}
+
+/**
  * Query notifications belonging ONLY to the authenticated user.
  *
  * Features:
@@ -218,6 +341,9 @@ export async function getNotification(
  * - Descending order (ScanIndexForward: false) returns newest notifications first.
  * - Supports DynamoDB pagination via limit and exclusiveStartKey.
  * - Optional unreadOnly filter.
+ * - On initial load (no exclusiveStartKey), backfills any RIDE_REQUEST_RECEIVED
+ *   notifications that the passenger's client could not write due to IAM
+ *   LeadingKeys row-level isolation (see syncRideRequestNotifications).
  */
 export async function getUserNotifications(
   options: GetUserNotificationsOptions = {}
@@ -255,8 +381,27 @@ export async function getUserNotifications(
       })
     );
 
+    const existingItems = (result.Items as NotificationRecord[]) ?? [];
+
+    // On initial page load (no pagination cursor), backfill any
+    // RIDE_REQUEST_RECEIVED notifications that were blocked by IAM LeadingKeys.
+    // This runs under the ride owner's own credentials and is safe + idempotent.
+    let backfilledItems: NotificationRecord[] = [];
+    if (!options.exclusiveStartKey && !options.unreadOnly) {
+      backfilledItems = await syncRideRequestNotifications(resolvedUserId, existingItems);
+    }
+
+    // Merge backfilled items in (newest first by createdAt)
+    const allItems =
+      backfilledItems.length > 0
+        ? [...backfilledItems, ...existingItems].sort(
+            (a, b) =>
+              new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          )
+        : existingItems;
+
     return {
-      items: (result.Items as NotificationRecord[]) ?? [],
+      items: allItems,
       lastEvaluatedKey: result.LastEvaluatedKey,
     };
   } catch (err) {

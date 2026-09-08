@@ -295,6 +295,8 @@ export async function sendJoinRequest(
     // Check if already requested or joined
     const existing = await getRideById(rideId);
     if (!existing) return { success: false, message: "Ride not found." };
+    if (existing.userId === userId)
+      return { success: false, message: "You cannot join your own ride." };
     if (existing.joinedByIds?.includes(userId))
       return { success: false, message: "You have already joined this ride." };
     if (existing.pendingRequestIds?.includes(userId))
@@ -319,6 +321,7 @@ export async function sendJoinRequest(
         },
       })
     );
+
     return { success: true, message: "Request sent! Waiting for approval." };
   } catch (err) {
     console.error("sendJoinRequest error:", err);

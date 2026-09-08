@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, type ReactNode } from "react";
 import {
   CheckCircle2,
   XCircle,
@@ -48,7 +48,7 @@ function formatTimeAgo(isoString: string): string {
 
 // ─── Notification Type Visual Config ──────────────────────────────────
 interface VisualConfig {
-  icon: JSX.Element;
+  icon: ReactNode;
   color: string;
   bg: string;
 }
