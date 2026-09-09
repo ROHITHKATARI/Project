@@ -27,6 +27,8 @@ export interface StructuredNotificationData {
   rideId?: string;
   chatId?: string;
   notificationId?: string;
+  senderId?: string;
+  senderName?: string;
   [key: string]: unknown;
 }
 

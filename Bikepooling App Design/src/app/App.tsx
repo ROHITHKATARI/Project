@@ -13,7 +13,7 @@ import { DiscoverScreen } from "./components/DiscoverScreen";
 import { MyRidesScreen } from "./components/MyRidesScreen";
 import { TandemBike } from "./components/ui/TandemBike";
 import { RideDetailScreen } from "./components/RideDetailScreen";
-import { getRideById, type RidePost } from "../lib/ridesDb";
+import { type RidePost } from "../lib/ridesDb";
 import { getCurrentAuthUser, logoutUser, getAWSCredentials } from "../lib/auth";
 import { exchangeNativeOAuthCode } from "../lib/nativeOAuth";
 import { upsertUserProfile } from "../lib/userDb";
@@ -28,6 +28,13 @@ import {
   subscribeToForegroundNotifications,
 } from "../lib/pushNotifications";
 import { registerDeviceToken } from "../lib/deviceRegistrationDb";
+import {
+  resolveNotificationRoute,
+  routerInputFromFCM,
+  routerInputFromRecord,
+  type RideDetailTab,
+} from "../lib/notificationRouter";
+import type { NotificationRecord } from "../lib/notificationsDb";
 
 // ─── DiscoverAndMatch wrapper ─────────────────────────────────────────
 function DiscoverAndMatch({
@@ -111,6 +118,7 @@ function AppShell({
   const [showToast, setShowToast] = useState<string | null>(null);
   const [notifCount, setNotifCount] = useState(0);
   const [selectedRide, setSelectedRide] = useState<RidePost | null>(null);
+  const [selectedRideTab, setSelectedRideTab] = useState<RideDetailTab>("details");
 
   // Navigate with history tracking for Android back button
   const navigateTo = React.useCallback((s: Screen) => {
@@ -124,7 +132,11 @@ function AppShell({
 
   // Go back one step in screen history
   const goBack = React.useCallback(() => {
-    if (selectedRide) { setSelectedRide(null); return; }
+    if (selectedRide) {
+      setSelectedRide(null);
+      setSelectedRideTab("details");
+      return;
+    }
     const history = screenHistoryRef.current;
     if (history.length > 1) {
       history.pop(); // remove current
@@ -142,25 +154,56 @@ function AppShell({
     return () => { (AppShell as unknown as { _goBack?: () => void })._goBack = undefined; };
   }, [goBack]);
 
+  // ─── Centralized notification router ─────────────────────────────────
+  // Single function used by both FCM tap and inbox tap so routing
+  // logic is never duplicated.
+  const handleNotificationRoute = React.useCallback(
+    async (input: Parameters<typeof resolveNotificationRoute>[0]) => {
+      try {
+        const routeAction = await resolveNotificationRoute(input);
+        switch (routeAction.action) {
+          case "open_ride":
+            setSelectedRideTab(routeAction.initialTab);
+            setSelectedRide(routeAction.ride);
+            break;
+          case "navigate":
+            navigateTo(routeAction.screen);
+            break;
+          case "noop":
+            break;
+        }
+      } catch (err) {
+        console.error("[NotificationRouter] Routing failed:", err);
+        navigateTo("notifications");
+      }
+    },
+    [navigateTo]
+  );
+
+  // Stable ref so the FCM onTap closure — registered only once by
+  // initializeFCM (guarded by isInitialized) — always calls the
+  // current version of handleNotificationRoute without going stale.
+  const handleNotificationRouteRef = React.useRef(handleNotificationRoute);
+  React.useEffect(() => {
+    handleNotificationRouteRef.current = handleNotificationRoute;
+  }, [handleNotificationRoute]);
+
+  // Adapter called when the user taps an inbox notification record.
+  const handleSelectNotification = React.useCallback(
+    (notif: NotificationRecord) => {
+      handleNotificationRoute(routerInputFromRecord(notif));
+    },
+    [handleNotificationRoute]
+  );
+
   // ─── FCM Push Notifications Initialization & Deep-Linking ───────────
   React.useEffect(() => {
     initializeFCM({
-      onTap: async (data) => {
+      onTap: (data) => {
         console.log("[FCM DeepLink] Push notification tapped:", data);
-        const targetId = data.rideId || data.chatId;
-        if (targetId) {
-          try {
-            const ride = await getRideById(targetId);
-            if (ride) {
-              setSelectedRide(ride);
-              return;
-            }
-          } catch (e) {
-            console.error("[FCM DeepLink] Failed to load ride for notification:", e);
-          }
-        }
-        // Fallback for SYSTEM_ANNOUNCEMENT, unknown types, or missing deep-link data
-        navigateTo("notifications");
+        // Read through the ref so this closure — registered once and
+        // never re-registered — always dispatches to the latest router.
+        handleNotificationRouteRef.current(routerInputFromFCM(data));
       },
     });
 
@@ -185,7 +228,11 @@ function AppShell({
       unsubscribeToken();
       unsubscribeForeground();
     };
-  }, [user.id, navigateTo]);
+    // initializeFCM is guarded by isInitialized — it runs once per app
+    // lifetime. user.id is included so device token registration fires
+    // when the user changes (e.g. logout → login).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user.id]);
 
   const toast = (msg: string) => {
     setShowToast(msg);
@@ -236,7 +283,7 @@ function AppShell({
                 Notifications
               </h2>
             </div>
-            <NotificationsScreen />
+            <NotificationsScreen onSelectNotification={handleSelectNotification} />
           </div>
         );
       case "discover":
@@ -301,7 +348,11 @@ function AppShell({
           currentUserId={user.id}
           currentUserName={user.name}
           userLocation={userLocation}
-          onClose={() => setSelectedRide(null)}
+          initialTab={selectedRideTab}
+          onClose={() => {
+            setSelectedRide(null);
+            setSelectedRideTab("details");
+          }}
         />
       )}
 

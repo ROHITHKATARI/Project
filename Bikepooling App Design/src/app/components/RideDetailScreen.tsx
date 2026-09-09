@@ -33,16 +33,19 @@ const ROUTE_COLORS = {
   join: "#f97316",
 };
 
+type Tab = "details" | "location" | "chat";
+
 // ─── Props ────────────────────────────────────────────────────────────
 interface RideDetailScreenProps {
   ride: RidePost;
   currentUserId: string;
   currentUserName: string;
   userLocation?: UserLocation | null;
+  /** If provided, the screen opens on this tab instead of "details". */
+  initialTab?: Tab;
   onClose: () => void;
 }
 
-type Tab = "details" | "location" | "chat";
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 const AVATAR_COLORS = ["#3b82f6","#14b8a6","#8b5cf6","#ec4899","#f59e0b","#06b6d4","#10b981"];
@@ -1540,9 +1543,10 @@ export function RideDetailScreen({
   currentUserId,
   currentUserName,
   userLocation,
+  initialTab,
   onClose,
 }: RideDetailScreenProps) {
-  const [tab, setTab] = useState<Tab>("details");
+  const [tab, setTab] = useState<Tab>(initialTab ?? "details");
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
   const [liveRide, setLiveRide] = useState<RidePost>(ride);
 
